@@ -1,14 +1,14 @@
 const cells = document.querySelectorAll(".cell")
 const restartXBtn = document.getElementById("restartX")
 const restartOBtn = document.getElementById("restartO")
-const turnTracker = document.getElementById('turnTracker')
-const selectRock = document.getElementById('selectRock')
-const selectPaper = document.getElementById('selectPaper')
-const selectScissors = document.getElementById('selectScissors')
-const singleplayerBtn = document.getElementById('singleplayer')
-const twoplayerBtn = document.getElementById('twoplayer')
-const botSkillBar = document.getElementById('botSkill')
-const botSkillDisplay = document.getElementById('botSkillP')
+const turnTracker = document.getElementById("turnTracker")
+const selectRock = document.getElementById("selectRock")
+const selectPaper = document.getElementById("selectPaper")
+const selectScissors = document.getElementById("selectScissors")
+const singleplayerBtn = document.getElementById("singleplayer")
+const twoplayerBtn = document.getElementById("twoplayer")
+const botSkillBar = document.getElementById("botSkill")
+const botSkillDisplay = document.getElementById("botSkillP")
 
 const winLines = [
     [0, 1, 2],
@@ -23,23 +23,17 @@ const winLines = [
 const moves = ["☗", "🗋", "✂"]
 const beatsDict = {"☗": "✂", "🗋": "☗", "✂": "🗋"}
 
-const rockfish = new Worker("rockfish.js")
-rockfish.onmessage = function(e){
-    const analysis = e.data.analysis
-    console.log(analysis)
-    let chosenMove = skillBasedMovePick(analysis, botSkill)
-    console.log(chosenMove)
-
-    changeSelection(chosenMove.move[1])
-    playMove(cells[chosenMove.move[0]])
-}
-
 let gamemode = "singleplayer"
 let turn = "X"
 let gameOver = false
 let selectedMove = "☗"
-let deepSearch = false
-let botSkill = 100
+let botSkill = Number(botSkillBar?.value ?? 300)
+let rockfish = null
+let pendingAiRequest = null
+let aiRequestSequence = 0
+let aiMoveTimer = null
+let aiWatchdogTimer = null
+let statsReady = Promise.resolve()
 
 let user = {
     "rating": 100,
@@ -52,112 +46,274 @@ let user = {
     "S0": 0, "S1": 0, "S2": 0, "S3": 0, "S4": 0, "S5": 0, "S6": 0, "S7": 0, "S8": 0
 }
 
-async function save(){
-    await localforage.setItem("user", user)
-}
-
-async function load(){
-    let storedUser = await localforage.getItem("user")
-    if (storedUser) {user = storedUser} else {save()}
-}
-
-function cellClicked(event){
-    if (gameOver || turn == "O" && gamemode == "singleplayer") {return}
-    let moveToStr = {"☗": "R", "🗋": "P", "✂": "S"}
-    user[moveToStr[selectedMove]] += 1
-    save()
-    playMove(event.currentTarget)
-}
-
-function playMove(cell) {
-    if (cell.textContent) {
-        if (beatsDict[selectedMove] != cell.textContent) {return}
+async function save() {
+    if (typeof localforage === "undefined") return
+    try {
+        await localforage.setItem("user", user)
+    } catch (error) {
+        console.warn("Could not save RPSXO stats", error)
     }
-    cell.textContent = selectedMove
-    if(findWin()) {endGame()}
-    if (gameOver) {return}
-    turn = (turn == "X") ? "O": "X"
-    if (turn == "O" && gamemode == "singleplayer") {return setTimeout(aiMove(), 0)}
-    turnTracker.textContent = `${turn}'s turn`
 }
 
-function findWin(){
-    let board = Array.from(cells).map(cell => cell.textContent)
+async function load() {
+    if (typeof localforage === "undefined") return
+    try {
+        const storedUser = await localforage.getItem("user")
+        if (storedUser) user = storedUser
+        else await save()
+    } catch (error) {
+        console.warn("Could not load RPSXO stats", error)
+    }
+}
 
-    return winLines.some((line) => {
-        let cell1 = board[line[0]]
-        let cell2 = board[line[1]]
-        let cell3 = board[line[2]]
-        return cell1 == cell2 && cell3 && cell1 == cell3
+function boardArray() {
+    return Array.from(cells).map(cell => cell.textContent)
+}
+
+function boardKey(board = boardArray()) {
+    return board.join("|")
+}
+
+function createRockfishWorker() {
+    try {
+        const worker = new Worker("rockfish.js")
+        worker.onmessage = event => handleRockfishMessage(event, worker)
+        worker.onerror = event => handleRockfishError(event, worker)
+        worker.onmessageerror = event => handleRockfishError(event, worker)
+        return worker
+    } catch (error) {
+        console.error("Could not start Rockfish", error)
+        return null
+    }
+}
+
+function cancelAiSearch() {
+    if (aiMoveTimer !== null) {
+        clearTimeout(aiMoveTimer)
+        aiMoveTimer = null
+    }
+    if (aiWatchdogTimer !== null) {
+        clearTimeout(aiWatchdogTimer)
+        aiWatchdogTimer = null
+    }
+    pendingAiRequest = null
+    aiRequestSequence += 1
+    if (rockfish) rockfish.terminate()
+    rockfish = createRockfishWorker()
+}
+
+function scheduleAiMove() {
+    if (aiMoveTimer !== null) clearTimeout(aiMoveTimer)
+    aiMoveTimer = setTimeout(() => {
+        aiMoveTimer = null
+        aiMove()
+    }, 0)
+}
+
+function handleRockfishMessage(event, sourceWorker) {
+    if (sourceWorker !== rockfish) return
+    const request = pendingAiRequest
+    if (!request) return
+
+    const data = event?.data
+    if (!data) {
+        pendingAiRequest = null
+        clearAiWatchdog()
+        return playFallbackAiMove()
+    }
+    if (data.requestId !== request.id) return
+    if (gamemode !== "singleplayer" || turn !== "O" || gameOver || boardKey() !== request.boardKey) {
+        pendingAiRequest = null
+        clearAiWatchdog()
+        return
+    }
+
+    pendingAiRequest = null
+    clearAiWatchdog()
+    if (data.error || !Array.isArray(data.analysis) || data.analysis.length === 0) {
+        console.error(data.error || "Rockfish returned no legal moves")
+        return playFallbackAiMove()
+    }
+
+    const chosenMove = skillBasedMovePick(data.analysis, request.skill)
+    if (!chosenMove || !Array.isArray(chosenMove.move)) return playFallbackAiMove()
+
+    const [cellIndex, piece] = chosenMove.move
+    if (!playMove(cells[cellIndex], piece)) playFallbackAiMove()
+}
+
+function handleRockfishError(event, sourceWorker) {
+    if (sourceWorker !== rockfish) return
+    if (event?.preventDefault) event.preventDefault()
+    if (!pendingAiRequest) return
+
+    console.error("Rockfish worker failed", event)
+    pendingAiRequest = null
+    clearAiWatchdog()
+    if (rockfish) rockfish.terminate()
+    rockfish = createRockfishWorker()
+    playFallbackAiMove()
+}
+
+function clearAiWatchdog() {
+    if (aiWatchdogTimer === null) return
+    clearTimeout(aiWatchdogTimer)
+    aiWatchdogTimer = null
+}
+
+function startAiWatchdog(requestId) {
+    clearAiWatchdog()
+    aiWatchdogTimer = setTimeout(() => {
+        aiWatchdogTimer = null
+        if (!pendingAiRequest || pendingAiRequest.id !== requestId) return
+        console.error("Rockfish search timed out")
+        pendingAiRequest = null
+        if (rockfish) rockfish.terminate()
+        rockfish = createRockfishWorker()
+        playFallbackAiMove()
+    }, 2000)
+}
+
+function cellClicked(event) {
+    if (gameOver || (turn === "O" && gamemode === "singleplayer")) return
+
+    const playedPiece = selectedMove
+    if (!playMove(event.currentTarget, playedPiece)) return
+
+    const moveToStat = {"☗": "R", "🗋": "P", "✂": "S"}
+    void statsReady.then(() => {
+        user[moveToStat[playedPiece]] += 1
+        return save()
     })
 }
 
-function endGame(){
-    turnTracker.textContent = `${turn} wins!`
-    gameOver = true
+function playMove(cell, piece = selectedMove) {
+    if (gameOver || !cell || !moves.includes(piece)) return false
+    if (cell.textContent && beatsDict[piece] !== cell.textContent) return false
+
+    cell.textContent = piece
+    if (findWin()) {
+        endGame()
+        return true
+    }
+
+    turn = turn === "X" ? "O" : "X"
+    if (turn === "O" && gamemode === "singleplayer") {
+        turnTracker.textContent = "O is thinking…"
+        scheduleAiMove()
+    } else {
+        turnTracker.textContent = `${turn}'s turn`
+    }
+    return true
 }
 
-function restart(start){
-    cells.forEach(cell => cell.textContent = "")
+function findWin() {
+    const board = boardArray()
+    return winLines.some(line => {
+        const firstPiece = board[line[0]]
+        return firstPiece && firstPiece === board[line[1]] && firstPiece === board[line[2]]
+    })
+}
+
+function endGame() {
+    turnTracker.textContent = `${turn} wins!`
+    gameOver = true
+    pendingAiRequest = null
+}
+
+function restart(start) {
+    cancelAiSearch()
+    cells.forEach(cell => { cell.textContent = "" })
     gameOver = false
     turn = start
     turnTracker.textContent = `${start}'s turn`
-    if (turn == "O" && gamemode == "singleplayer") {aiMove()}
+    if (turn === "O" && gamemode === "singleplayer") {
+        turnTracker.textContent = "O is thinking…"
+        scheduleAiMove()
+    }
 }
 
-function randomMove(){
-    let cell = cells[Math.floor(Math.random() * cells.length)]
-    selectedMove = (cell.textContent) ? beatsDict[beatsDict[cell.textContent]] :moves[Math.floor(Math.random() * moves.length)]
-    playMove(cell)
-}
-
-function aiMove(){
-    const simBoard = Array.from(cells).map(cell => cell.textContent);
-
-    rockfish.postMessage({
-        "type": "playMove",
-        "board": simBoard,
-        "turn": turn,
-        "deepSearch": deepSearch,
-        "maxDepth": Math.pow(botSkill / 100, 2) / 10
+function legalAiMoves(board) {
+    const outcomes = []
+    board.forEach((piece, cellIndex) => {
+        if (piece) {
+            outcomes.push([cellIndex, beatsDict[beatsDict[piece]]])
+        } else {
+            moves.forEach(move => outcomes.push([cellIndex, move]))
+        }
     })
+    return outcomes
 }
 
-function skillBasedMovePick(moves, skill){
-    let temperature = Math.exp(1100 / skill - 1)
-    const maxScore = moves[0].score
-    
-    const moveWeights = moves.map(move => {
-        return Math.exp((move.score - maxScore) / temperature)
-    })
+function playFallbackAiMove() {
+    if (gamemode !== "singleplayer" || turn !== "O" || gameOver) return
+    const outcomes = legalAiMoves(boardArray())
+    if (outcomes.length === 0) return
+    const [cellIndex, piece] = outcomes[Math.floor(Math.random() * outcomes.length)]
+    playMove(cells[cellIndex], piece)
+}
+
+function aiMove() {
+    if (gamemode !== "singleplayer" || turn !== "O" || gameOver) return
+    if (pendingAiRequest) return
+
+    const board = boardArray()
+    if (!rockfish) return playFallbackAiMove()
+
+    const request = {
+        id: ++aiRequestSequence,
+        boardKey: boardKey(board),
+        skill: botSkill
+    }
+    pendingAiRequest = request
+    startAiWatchdog(request.id)
+    try {
+        rockfish.postMessage({
+            type: "playMove",
+            requestId: request.id,
+            board,
+            turn,
+            skill: request.skill
+        })
+    } catch (error) {
+        handleRockfishError(error, rockfish)
+    }
+}
+
+function skillBasedMovePick(analyzedMoves, skill) {
+    if (!Array.isArray(analyzedMoves) || analyzedMoves.length === 0) return null
+
+    const numericSkill = Math.min(1000, Math.max(1, Number(skill) || 1))
+    const normalisedSkill = (numericSkill - 1) / 999
+    const temperature = 0.5 + (60 * Math.pow(1 - normalisedSkill, 2))
+    const randomBlend = Math.pow(1 - normalisedSkill, 4)
+    const maxScore = analyzedMoves[0].score
+    const moveWeights = analyzedMoves.map(move => (
+        Math.exp(Math.max(-700, (move.score - maxScore) / temperature))
+    ))
     const totalWeight = moveWeights.reduce((sum, weight) => sum + weight, 0)
 
-    let cProbabilities = []
-    let cSum = 0
-    for (let i = 0; i < moveWeights.length; i++){
-        cSum += moveWeights[i] / totalWeight
-        cProbabilities.push(cSum)
+    let cumulativeProbability = 0
+    const randomNumber = Math.random()
+    for (let index = 0; index < analyzedMoves.length; index += 1) {
+        const randomProbability = randomBlend / analyzedMoves.length
+        const informedProbability = (1 - randomBlend) * (moveWeights[index] / totalWeight)
+        cumulativeProbability += randomProbability + informedProbability
+        if (randomNumber < cumulativeProbability) return analyzedMoves[index]
     }
 
-    const rndNum = Math.random()
-    for (let i = 0; i < moves.length; i++){
-        if (rndNum < cProbabilities[i]) {return moves[i]}
-    }
-
-    return moves[-1]
+    return analyzedMoves[analyzedMoves.length - 1]
 }
 
-function changeSelection(newMove){
-    if (newMove == selectedMove) {return}
-    const moveToBtn = {"☗": selectRock, "🗋": selectPaper, "✂": selectScissors}
-    moveToBtn[selectedMove].classList.remove("selectedBtn")
+function changeSelection(newMove) {
+    if (newMove === selectedMove) return
+    const moveToButton = {"☗": selectRock, "🗋": selectPaper, "✂": selectScissors}
+    moveToButton[selectedMove].classList.remove("selectedBtn")
     selectedMove = newMove
-    moveToBtn[selectedMove].classList.add("selectedBtn")
+    moveToButton[selectedMove].classList.add("selectedBtn")
 }
 
-cells.forEach(cell => 
-    cell.addEventListener("click", cellClicked)
-)
+cells.forEach(cell => cell.addEventListener("click", cellClicked))
 
 if (restartXBtn) restartXBtn.addEventListener("click", () => restart("X"))
 if (restartOBtn) restartOBtn.addEventListener("click", () => restart("O"))
@@ -167,23 +323,26 @@ selectPaper.addEventListener("click", () => changeSelection("🗋"))
 selectScissors.addEventListener("click", () => changeSelection("✂"))
 
 if (singleplayerBtn) singleplayerBtn.addEventListener("click", () => {
-    if (gamemode == "singleplayer") {return}
+    if (gamemode === "singleplayer") return
     twoplayerBtn.classList.remove("selectedBtn")
     gamemode = "singleplayer"
     singleplayerBtn.classList.add("selectedBtn")
     restart("X")
 })
+
 if (twoplayerBtn) twoplayerBtn.addEventListener("click", () => {
-    if (gamemode == "twoplayer") {return}
+    if (gamemode === "twoplayer") return
     singleplayerBtn.classList.remove("selectedBtn")
     gamemode = "twoplayer"
     twoplayerBtn.classList.add("selectedBtn")
     restart("X")
 })
 
-if (botSkillBar) botSkillBar.addEventListener("input", function(){
-    botSkill = this.value
+if (botSkillBar) botSkillBar.addEventListener("input", function updateBotSkill() {
+    botSkill = Number(this.value)
     botSkillDisplay.textContent = botSkill
 })
 
-load()
+if (botSkillDisplay) botSkillDisplay.textContent = botSkill
+rockfish = createRockfishWorker()
+statsReady = load()

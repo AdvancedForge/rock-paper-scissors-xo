@@ -1,0 +1,8 @@
+{
+  "name": "rpsxo",
+  "private": true,
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check rockfish.js && node --check rpsxo.js"
+  }
+}
