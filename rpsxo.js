@@ -10,6 +10,11 @@ const twoplayerBtn = document.getElementById("twoplayer")
 const botSkillBar = document.getElementById("botSkill")
 const botSkillDisplay = document.getElementById("botSkillP")
 
+// Keep source files ASCII-only so a host with a bad charset cannot corrupt the
+// values shared by the page and the worker.
+const ROCK = "\uD83E\uDEA8"
+const PAPER = "\uD83D\uDCC4"
+const SCISSORS = "\u2702\uFE0F"
 const winLines = [
     [0, 1, 2],
     [3, 4, 5],
@@ -20,13 +25,13 @@ const winLines = [
     [0, 4, 8],
     [2, 4, 6]
 ]
-const moves = ["🪨", "📄", "✂️"]
-const beatsDict = {"🪨": "✂️", "📄": "🪨", "✂️": "📄"}
+const moves = [ROCK, PAPER, SCISSORS]
+const beatsDict = {[ROCK]: SCISSORS, [PAPER]: ROCK, [SCISSORS]: PAPER}
 
 let gamemode = "singleplayer"
 let turn = "X"
 let gameOver = false
-let selectedMove = "🪨"
+let selectedMove = ROCK
 let botSkill = Number(botSkillBar?.value ?? 300)
 let rockfish = null
 let pendingAiRequest = null
@@ -180,7 +185,7 @@ function cellClicked(event) {
     const playedPiece = selectedMove
     if (!playMove(event.currentTarget, playedPiece)) return
 
-    const moveToStat = {"🪨": "R", "📄": "P", "✂️": "S"}
+    const moveToStat = {[ROCK]: "R", [PAPER]: "P", [SCISSORS]: "S"}
     void statsReady.then(() => {
         user[moveToStat[playedPiece]] += 1
         return save()
@@ -199,7 +204,7 @@ function playMove(cell, piece = selectedMove) {
 
     turn = turn === "X" ? "O" : "X"
     if (turn === "O" && gamemode === "singleplayer") {
-        turnTracker.textContent = "O is thinking…"
+        turnTracker.textContent = "O is thinking\u2026"
         scheduleAiMove()
     } else {
         turnTracker.textContent = `${turn}'s turn`
@@ -228,7 +233,7 @@ function restart(start) {
     turn = start
     turnTracker.textContent = `${start}'s turn`
     if (turn === "O" && gamemode === "singleplayer") {
-        turnTracker.textContent = "O is thinking…"
+        turnTracker.textContent = "O is thinking\u2026"
         scheduleAiMove()
     }
 }
@@ -307,7 +312,7 @@ function skillBasedMovePick(analyzedMoves, skill) {
 
 function changeSelection(newMove) {
     if (newMove === selectedMove) return
-    const moveToButton = {"🪨": selectRock, "📄": selectPaper, "✂️": selectScissors}
+    const moveToButton = {[ROCK]: selectRock, [PAPER]: selectPaper, [SCISSORS]: selectScissors}
     moveToButton[selectedMove].classList.remove("selectedBtn")
     selectedMove = newMove
     moveToButton[selectedMove].classList.add("selectedBtn")
@@ -318,9 +323,9 @@ cells.forEach(cell => cell.addEventListener("click", cellClicked))
 if (restartXBtn) restartXBtn.addEventListener("click", () => restart("X"))
 if (restartOBtn) restartOBtn.addEventListener("click", () => restart("O"))
 
-selectRock.addEventListener("click", () => changeSelection("🪨"))
-selectPaper.addEventListener("click", () => changeSelection("📄"))
-selectScissors.addEventListener("click", () => changeSelection("✂️"))
+selectRock.addEventListener("click", () => changeSelection(ROCK))
+selectPaper.addEventListener("click", () => changeSelection(PAPER))
+selectScissors.addEventListener("click", () => changeSelection(SCISSORS))
 
 if (singleplayerBtn) singleplayerBtn.addEventListener("click", () => {
     if (gamemode === "singleplayer") return

@@ -6,6 +6,13 @@ const vm = require("node:vm")
 
 const uiSource = readFileSync(path.join(__dirname, "..", "rpsxo.js"), "utf8")
 
+test("every HTML entry point declares UTF-8 before page content", () => {
+    for (const filename of ["index.html", "playground.html", "tutorial.html"]) {
+        const html = readFileSync(path.join(__dirname, "..", filename), "utf8")
+        assert.match(html, /<head>\s*<meta charset="UTF-8">/i, filename)
+    }
+})
+
 class FakeClassList {
     constructor(...classes) {
         this.classes = new Set(classes)
@@ -163,6 +170,27 @@ test("an AI reply preserves the human piece selection", () => {
     assert.equal(harness.elements.turnTracker.textContent, "X's turn")
     assert.equal(harness.elements.selectRock.classList.contains("selectedBtn"), true)
     assert.equal(harness.elements.selectPaper.classList.contains("selectedBtn"), false)
+})
+
+test("each emoji can complete a winning line in local play", () => {
+    const pieces = [
+        ["selectRock", "🪨"],
+        ["selectPaper", "📄"],
+        ["selectScissors", "✂️"]
+    ]
+
+    for (const [selector, piece] of pieces) {
+        const harness = createHarness()
+        harness.elements.twoplayer.dispatch("click")
+        harness.elements[selector].dispatch("click")
+        for (const cell of [0, 3, 1, 4, 2]) harness.cells[cell].dispatch("click")
+
+        assert.deepEqual(harness.cells.slice(0, 3).map(cell => cell.textContent), [piece, piece, piece])
+        assert.equal(harness.elements.turnTracker.textContent, "X wins!")
+
+        harness.cells[5].dispatch("click")
+        assert.equal(harness.cells[5].textContent, "")
+    }
 })
 
 test("skill one keeps the deliberately random beginner behavior", () => {

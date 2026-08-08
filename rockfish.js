@@ -21,8 +21,13 @@
     const LINES_BY_CELL = Array.from({length: 9}, () => [])
     WIN_LINES.forEach(line => line.forEach(cell => LINES_BY_CELL[cell].push(line)))
 
-    const PIECES = ["", "🪨", "📄", "✂️"]
-    const PIECE_CODES = {"🪨": 1, "📄": 2, "✂️": 3}
+    // These escapes decode identically even if the worker is served with an
+    // incorrect charset.
+    const ROCK = "\uD83E\uDEA8"
+    const PAPER = "\uD83D\uDCC4"
+    const SCISSORS = "\u2702\uFE0F"
+    const PIECES = ["", ROCK, PAPER, SCISSORS]
+    const PIECE_CODES = {[ROCK]: 1, [PAPER]: 2, [SCISSORS]: 3}
     const CELL_ORDER = [4, 0, 2, 6, 8, 1, 3, 5, 7]
     const BOARD_TRANSFORMS = [
         [0, 1, 2, 3, 4, 5, 6, 7, 8],
