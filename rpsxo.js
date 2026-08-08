@@ -27,6 +27,7 @@ const winLines = [
 ]
 const moves = [ROCK, PAPER, SCISSORS]
 const beatsDict = {[ROCK]: SCISSORS, [PAPER]: ROCK, [SCISSORS]: PAPER}
+const useInlineRockfish = typeof location !== "undefined" && location.protocol === "file:"
 
 let gamemode = "singleplayer"
 let turn = "X"
@@ -79,7 +80,17 @@ function boardKey(board = boardArray()) {
     return board.join("|")
 }
 
+function inlineRockfishEngine() {
+    const engine = typeof globalThis !== "undefined" ? globalThis.Rockfish : null
+    return engine && typeof engine.analyzePosition === "function" ? engine : null
+}
+
 function createRockfishWorker() {
+    // Chromium does not allow a file:// page to load an external Worker. The
+    // same engine is available in-page for downloaded copies of the game.
+    if (useInlineRockfish) return null
+    if (typeof Worker === "undefined") return null
+
     try {
         const worker = new Worker("rockfish.js")
         worker.onmessage = event => handleRockfishMessage(event, worker)
@@ -258,12 +269,34 @@ function playFallbackAiMove() {
     playMove(cells[cellIndex], piece)
 }
 
+function runInlineRockfish(board, request) {
+    const engine = inlineRockfishEngine()
+    if (!engine) {
+        pendingAiRequest = null
+        return playFallbackAiMove()
+    }
+
+    try {
+        const result = engine.analyzePosition(board, {
+            skill: request.skill,
+            timeLimitMs: engine.skillToTimeLimit(request.skill),
+            iterative: true
+        })
+        handleRockfishMessage({data: {requestId: request.id, ...result}}, null)
+    } catch (error) {
+        console.error("In-page Rockfish failed", error)
+        pendingAiRequest = null
+        playFallbackAiMove()
+    }
+}
+
 function aiMove() {
     if (gamemode !== "singleplayer" || turn !== "O" || gameOver) return
     if (pendingAiRequest) return
 
     const board = boardArray()
-    if (!rockfish) return playFallbackAiMove()
+    const inlineEngine = useInlineRockfish ? inlineRockfishEngine() : null
+    if (!rockfish && !inlineEngine) return playFallbackAiMove()
 
     const request = {
         id: ++aiRequestSequence,
@@ -271,6 +304,8 @@ function aiMove() {
         skill: botSkill
     }
     pendingAiRequest = request
+    if (!rockfish) return runInlineRockfish(board, request)
+
     startAiWatchdog(request.id)
     try {
         rockfish.postMessage({

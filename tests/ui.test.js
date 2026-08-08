@@ -11,6 +11,9 @@ test("every HTML entry point declares UTF-8 before page content", () => {
         const html = readFileSync(path.join(__dirname, "..", filename), "utf8")
         assert.match(html, /<head>\s*<meta charset="UTF-8">/i, filename)
     }
+
+    const playground = readFileSync(path.join(__dirname, "..", "playground.html"), "utf8")
+    assert.match(playground, /<script src="rockfish\.js"><\/script>\s*<script src="rpsxo\.js"><\/script>/)
 })
 
 class FakeClassList {
@@ -49,7 +52,7 @@ class FakeElement {
     }
 }
 
-function createHarness(randomValue = 0) {
+function createHarness(randomValue = 0, options = {}) {
     const cells = Array.from({length: 9}, () => new FakeElement())
     const elements = {
         restartX: new FakeElement(),
@@ -119,10 +122,11 @@ function createHarness(randomValue = 0) {
     }
 
     const savedUsers = []
+    const consoleErrors = []
     const context = {
         Array,
         clearTimeout,
-        console: {error() {}, warn() {}},
+        console: {error: (...args) => consoleErrors.push(args), warn() {}},
         document: {
             querySelectorAll: selector => selector === ".cell" ? cells : [],
             getElementById: id => elements[id] ?? null
@@ -132,15 +136,17 @@ function createHarness(randomValue = 0) {
             setItem: async (_key, value) => { savedUsers.push({...value}) }
         },
         Math: Object.create(Math),
+        location: {protocol: options.protocol ?? "https:"},
         Promise,
         setTimeout,
         Worker: FakeWorker
     }
+    if (options.Rockfish) context.Rockfish = options.Rockfish
     context.Math.random = () => randomValue
     vm.createContext(context)
     vm.runInContext(uiSource, context)
 
-    return {cells, elements, runTimers, savedUsers, timers, workers}
+    return {cells, consoleErrors, elements, runTimers, savedUsers, timers, workers}
 }
 
 test("the displayed default skill is the skill sent to Rockfish", () => {
@@ -152,6 +158,51 @@ test("the displayed default skill is the skill sent to Rockfish", () => {
     harness.runTimers(0)
     assert.equal(harness.workers[0].messages.length, 1)
     assert.equal(harness.workers[0].messages[0].skill, 300)
+})
+
+test("file URLs use the in-page engine without constructing a Worker", () => {
+    let inlineRequest = null
+    const Rockfish = {
+        skillToTimeLimit: skill => skill,
+        analyzePosition: (board, options) => {
+            inlineRequest = {board: [...board], options: {...options}}
+            return {analysis: [{move: [4, "🗋"], score: 10}], depth: 2}
+        }
+    }
+    const harness = createHarness(0, {protocol: "file:", Rockfish})
+
+    assert.equal(harness.workers.length, 0)
+    harness.cells[0].dispatch("click")
+    harness.runTimers(0)
+
+    assert.deepEqual(inlineRequest.board, ["☗", "", "", "", "", "", "", "", ""])
+    assert.equal(inlineRequest.options.skill, 300)
+    assert.equal(inlineRequest.options.timeLimitMs, 300)
+    assert.equal(inlineRequest.options.iterative, true)
+    assert.equal(harness.cells[4].textContent, "🗋")
+    assert.equal(harness.elements.turnTracker.textContent, "X's turn")
+    assert.equal(harness.consoleErrors.length, 0)
+
+    harness.elements.restartO.dispatch("click")
+    harness.runTimers(0)
+    assert.equal(harness.workers.length, 0)
+    assert.equal(harness.elements.turnTracker.textContent, "X's turn")
+})
+
+test("an in-page engine failure falls back without locking file play", () => {
+    const Rockfish = {
+        skillToTimeLimit: () => 25,
+        analyzePosition: () => { throw new Error("inline failure") }
+    }
+    const harness = createHarness(0, {protocol: "file:", Rockfish})
+
+    harness.cells[0].dispatch("click")
+    harness.runTimers(0)
+
+    assert.equal(harness.workers.length, 0)
+    assert.equal(harness.cells[0].textContent, "🗋")
+    assert.equal(harness.elements.turnTracker.textContent, "X's turn")
+    assert.equal(harness.consoleErrors.length, 1)
 })
 
 test("an AI reply preserves the human piece selection", () => {

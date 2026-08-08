@@ -51,20 +51,32 @@
     const SEARCH_TIMEOUT = Object.freeze({name: "SearchTimeout"})
 
     // The score cache is safe across turns and games: RPSXO has no piece ownership,
-    // so a state's value depends only on the board and remaining search depth.
+    // so a state's value depends only on the board and remaining search depth. It
+    // is allocated lazily because the page also loads this file as a file://
+    // fallback, while normal HTTP play still searches in a dedicated worker.
     const cacheSize = STATE_COUNT * (MAX_DEPTH + 1)
-    const cachedScores = new Int16Array(cacheSize)
-    const cachedScoreTypes = new Uint8Array(cacheSize)
-    const canonicalCache = new Int32Array(STATE_COUNT)
-    const evaluationCache = new Int16Array(STATE_COUNT)
-    const evaluationReady = new Uint8Array(STATE_COUNT)
-    const principalMoves = new Int8Array(STATE_COUNT)
-    canonicalCache.fill(-1)
-    principalMoves.fill(-1)
+    let cachedScores = null
+    let cachedScoreTypes = null
+    let canonicalCache = null
+    let evaluationCache = null
+    let evaluationReady = null
+    let principalMoves = null
 
     let searchDeadline = Infinity
     let searchedNodes = 0
     let cacheHits = 0
+
+    function ensureCaches() {
+        if (cachedScores) return
+        cachedScores = new Int16Array(cacheSize)
+        cachedScoreTypes = new Uint8Array(cacheSize)
+        canonicalCache = new Int32Array(STATE_COUNT)
+        evaluationCache = new Int16Array(STATE_COUNT)
+        evaluationReady = new Uint8Array(STATE_COUNT)
+        principalMoves = new Int8Array(STATE_COUNT)
+        canonicalCache.fill(-1)
+        principalMoves.fill(-1)
+    }
 
     function clamp(value, minimum, maximum) {
         return Math.min(maximum, Math.max(minimum, value))
@@ -168,6 +180,7 @@
     }
 
     function canonicalState(state) {
+        ensureCaches()
         const cached = canonicalCache[state]
         if (cached !== -1) return cached
 
@@ -370,6 +383,7 @@
     }
 
     function clearCaches() {
+        ensureCaches()
         cachedScores.fill(0)
         cachedScoreTypes.fill(CACHE_NONE)
         canonicalCache.fill(-1)
@@ -402,7 +416,10 @@
         module.exports = api
     }
 
-    if (globalScope && typeof globalScope.postMessage === "function") {
+    const isWindowScope = typeof window !== "undefined" && globalScope === window
+    if (isWindowScope) {
+        globalScope.Rockfish = api
+    } else if (globalScope && typeof globalScope.postMessage === "function") {
         globalScope.onmessage = function onRockfishMessage(event) {
             if (!event.data || event.data.type !== "playMove") return
 

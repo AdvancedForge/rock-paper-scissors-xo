@@ -149,3 +149,16 @@ test("worker messages echo request identity and report completed depth", () => {
     assert.equal(messages[0].depth, 2)
     assert.equal(messages[0].analysis.length, 27)
 })
+
+test("a normal script exposes Rockfish without replacing window.onmessage", () => {
+    const workerSource = readFileSync(path.join(__dirname, "..", "rockfish.js"), "utf8")
+    const originalMessageHandler = () => {}
+    const page = {onmessage: originalMessageHandler, postMessage() {}}
+    page.self = page
+    page.window = page
+    vm.createContext(page)
+    vm.runInContext(workerSource, page)
+
+    assert.equal(typeof page.Rockfish.analyzePosition, "function")
+    assert.equal(page.onmessage, originalMessageHandler)
+})
