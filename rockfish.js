@@ -21,8 +21,8 @@
     const LINES_BY_CELL = Array.from({length: 9}, () => [])
     WIN_LINES.forEach(line => line.forEach(cell => LINES_BY_CELL[cell].push(line)))
 
-    const PIECES = ["", "☗", "🗋", "✂"]
-    const PIECE_CODES = {"☗": 1, "🗋": 2, "✂": 3}
+    const PIECES = ["", "🪨", "📄", "✂️"]
+    const PIECE_CODES = {"🪨": 1, "📄": 2, "✂️": 3}
     const CELL_ORDER = [4, 0, 2, 6, 8, 1, 3, 5, 7]
     const BOARD_TRANSFORMS = [
         [0, 1, 2, 3, 4, 5, 6, 7, 8],

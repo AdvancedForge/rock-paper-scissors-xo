@@ -156,10 +156,10 @@ test("an AI reply preserves the human piece selection", () => {
 
     worker.deliver({
         requestId: request.requestId,
-        analysis: [{move: [4, "🗋"], score: 10}]
+        analysis: [{move: [4, "📄"], score: 10}]
     })
 
-    assert.equal(harness.cells[4].textContent, "🗋")
+    assert.equal(harness.cells[4].textContent, "📄")
     assert.equal(harness.elements.turnTracker.textContent, "X's turn")
     assert.equal(harness.elements.selectRock.classList.contains("selectedBtn"), true)
     assert.equal(harness.elements.selectPaper.classList.contains("selectedBtn"), false)
@@ -177,13 +177,13 @@ test("skill one keeps the deliberately random beginner behavior", () => {
     worker.deliver({
         requestId: request.requestId,
         analysis: [
-            {move: [1, "☗"], score: 10000},
-            {move: [2, "🗋"], score: 0},
-            {move: [3, "✂"], score: -10000}
+            {move: [1, "🪨"], score: 10000},
+            {move: [2, "📄"], score: 0},
+            {move: [3, "✂️"], score: -10000}
         ]
     })
 
-    assert.equal(harness.cells[3].textContent, "✂")
+    assert.equal(harness.cells[3].textContent, "✂️")
 })
 
 test("a stale worker reply cannot mutate a restarted two-player game", () => {
@@ -195,7 +195,7 @@ test("a stale worker reply cannot mutate a restarted two-player game", () => {
 
     harness.elements.twoplayer.dispatch("click")
     assert.equal(oldWorker.terminated, true)
-    oldWorker.deliver({requestId: oldRequest.requestId, analysis: [{move: [4, "🗋"], score: 10}]})
+    oldWorker.deliver({requestId: oldRequest.requestId, analysis: [{move: [4, "📄"], score: 10}]})
 
     assert.deepEqual(harness.cells.map(cell => cell.textContent), Array(9).fill(""))
     assert.equal(harness.elements.turnTracker.textContent, "X's turn")
@@ -221,7 +221,7 @@ test("worker errors fall back to a legal move instead of locking the turn", () =
 
     assert.equal(failedWorker.fail(), true)
     assert.equal(failedWorker.terminated, true)
-    assert.equal(harness.cells[0].textContent, "🗋")
+    assert.equal(harness.cells[0].textContent, "📄")
     assert.equal(harness.elements.turnTracker.textContent, "X's turn")
 })
 
@@ -233,6 +233,6 @@ test("a wedged worker is replaced after the watchdog deadline", () => {
 
     harness.runTimers(2000)
     assert.equal(wedgedWorker.terminated, true)
-    assert.equal(harness.cells[0].textContent, "🗋")
+    assert.equal(harness.cells[0].textContent, "📄")
     assert.equal(harness.elements.turnTracker.textContent, "X's turn")
 })

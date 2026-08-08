@@ -7,7 +7,7 @@ const vm = require("node:vm")
 const engine = require("../rockfish")
 
 const EMPTY_BOARD = Array(9).fill("")
-const PIECES = ["☗", "🗋", "✂"]
+const PIECES = ["🪨", "📄", "✂️"]
 const WIN_LINES = [
     [0, 1, 2],
     [3, 4, 5],
@@ -51,17 +51,17 @@ function sortedAnalysis(analysis) {
 }
 
 test("board encoding round-trips all pieces", () => {
-    const board = ["☗", "🗋", "✂", "", "✂", "☗", "", "🗋", ""]
+    const board = ["🪨", "📄", "✂️", "", "✂️", "🪨", "", "📄", ""]
     assert.deepEqual(engine.decodeBoard(engine.encodeBoard(board)), board)
 })
 
 test("legal move generation follows RPS replacement rules", () => {
     assert.equal(engine.legalMoves(engine.encodeBoard(EMPTY_BOARD)).length, 27)
 
-    const board = ["☗", "", "", "", "", "", "", "", ""]
+    const board = ["🪨", "", "", "", "", "", "", "", ""]
     const moves = engine.legalMoves(engine.encodeBoard(board)).map(engine.decodeMove)
     assert.equal(moves.length, 25)
-    assert.deepEqual(moves.filter(move => move[0] === 0), [[0, "🗋"]])
+    assert.deepEqual(moves.filter(move => move[0] === 0), [[0, "📄"]])
 })
 
 test("all eight win lines work for all three pieces", () => {
@@ -75,17 +75,17 @@ test("all eight win lines work for all three pieces", () => {
 })
 
 test("the engine always ranks an immediate win first", () => {
-    const board = ["☗", "☗", "", "🗋", "", "", "", "", ""]
+    const board = ["🪨", "🪨", "", "📄", "", "", "", "", ""]
     const result = engine.analyzePosition(board, {maxDepth: 4})
-    assert.deepEqual(result.analysis[0].move, [2, "☗"])
+    assert.deepEqual(result.analysis[0].move, [2, "🪨"])
     assert.equal(result.analysis[0].score, engine.WIN_SCORE + 4)
 })
 
 test("cached alpha-beta values match a cache-free minimax reference", () => {
     const fixtures = [
-        ["", "🗋", "☗", "🗋", "✂", "🗋", "", "🗋", "☗"],
-        ["☗", "", "🗋", "", "✂", "", "", "☗", ""],
-        ["✂", "🗋", "", "☗", "", "", "", "", ""]
+        ["", "📄", "🪨", "📄", "✂️", "📄", "", "📄", "🪨"],
+        ["🪨", "", "📄", "", "✂️", "", "", "🪨", ""],
+        ["✂️", "📄", "", "🪨", "", "", "", "", ""]
     ]
 
     fixtures.forEach((board, fixtureIndex) => {
@@ -97,15 +97,15 @@ test("cached alpha-beta values match a cache-free minimax reference", () => {
 })
 
 test("symmetric moves receive symmetric scores", () => {
-    const board = ["", "🗋", "☗", "🗋", "✂", "🗋", "", "🗋", "☗"]
+    const board = ["", "📄", "🪨", "📄", "✂️", "📄", "", "📄", "🪨"]
     const analysis = engine.analyzePosition(board, {maxDepth: 3}).analysis
-    const topLeft = analysis.find(result => result.move[0] === 0 && result.move[1] === "✂")
-    const bottomLeft = analysis.find(result => result.move[0] === 6 && result.move[1] === "✂")
+    const topLeft = analysis.find(result => result.move[0] === 0 && result.move[1] === "✂️")
+    const bottomLeft = analysis.find(result => result.move[0] === 6 && result.move[1] === "✂️")
     assert.equal(topLeft.score, bottomLeft.score)
 })
 
 test("cache entries cannot leak values between depth settings", () => {
-    const board = ["☗", "", "", "", "🗋", "", "", "", "✂"]
+    const board = ["🪨", "", "", "", "📄", "", "", "", "✂️"]
     engine.clearCaches()
     const shallowBefore = engine.analyzePosition(board, {maxDepth: 2}).analysis
     engine.analyzePosition(board, {maxDepth: 6})

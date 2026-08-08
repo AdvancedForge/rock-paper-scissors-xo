@@ -20,13 +20,13 @@ const winLines = [
     [0, 4, 8],
     [2, 4, 6]
 ]
-const moves = ["☗", "🗋", "✂"]
-const beatsDict = {"☗": "✂", "🗋": "☗", "✂": "🗋"}
+const moves = ["🪨", "📄", "✂️"]
+const beatsDict = {"🪨": "✂️", "📄": "🪨", "✂️": "📄"}
 
 let gamemode = "singleplayer"
 let turn = "X"
 let gameOver = false
-let selectedMove = "☗"
+let selectedMove = "🪨"
 let botSkill = Number(botSkillBar?.value ?? 300)
 let rockfish = null
 let pendingAiRequest = null
@@ -180,7 +180,7 @@ function cellClicked(event) {
     const playedPiece = selectedMove
     if (!playMove(event.currentTarget, playedPiece)) return
 
-    const moveToStat = {"☗": "R", "🗋": "P", "✂": "S"}
+    const moveToStat = {"🪨": "R", "📄": "P", "✂️": "S"}
     void statsReady.then(() => {
         user[moveToStat[playedPiece]] += 1
         return save()
@@ -307,7 +307,7 @@ function skillBasedMovePick(analyzedMoves, skill) {
 
 function changeSelection(newMove) {
     if (newMove === selectedMove) return
-    const moveToButton = {"☗": selectRock, "🗋": selectPaper, "✂": selectScissors}
+    const moveToButton = {"🪨": selectRock, "📄": selectPaper, "✂️": selectScissors}
     moveToButton[selectedMove].classList.remove("selectedBtn")
     selectedMove = newMove
     moveToButton[selectedMove].classList.add("selectedBtn")
@@ -318,9 +318,9 @@ cells.forEach(cell => cell.addEventListener("click", cellClicked))
 if (restartXBtn) restartXBtn.addEventListener("click", () => restart("X"))
 if (restartOBtn) restartOBtn.addEventListener("click", () => restart("O"))
 
-selectRock.addEventListener("click", () => changeSelection("☗"))
-selectPaper.addEventListener("click", () => changeSelection("🗋"))
-selectScissors.addEventListener("click", () => changeSelection("✂"))
+selectRock.addEventListener("click", () => changeSelection("🪨"))
+selectPaper.addEventListener("click", () => changeSelection("📄"))
+selectScissors.addEventListener("click", () => changeSelection("✂️"))
 
 if (singleplayerBtn) singleplayerBtn.addEventListener("click", () => {
     if (gamemode === "singleplayer") return
