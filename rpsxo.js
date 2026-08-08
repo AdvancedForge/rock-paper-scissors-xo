@@ -12,9 +12,9 @@ const botSkillDisplay = document.getElementById("botSkillP")
 
 // Keep source files ASCII-only so a host with a bad charset cannot corrupt the
 // values shared by the page and the worker.
-const ROCK = "\uD83E\uDEA8"
-const PAPER = "\uD83D\uDCC4"
-const SCISSORS = "\u2702\uFE0F"
+const ROCK = "\u2617"
+const PAPER = "\uD83D\uDDCB"
+const SCISSORS = "\u2702"
 const winLines = [
     [0, 1, 2],
     [3, 4, 5],

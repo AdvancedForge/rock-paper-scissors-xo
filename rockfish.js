@@ -23,9 +23,9 @@
 
     // These escapes decode identically even if the worker is served with an
     // incorrect charset.
-    const ROCK = "\uD83E\uDEA8"
-    const PAPER = "\uD83D\uDCC4"
-    const SCISSORS = "\u2702\uFE0F"
+    const ROCK = "\u2617"
+    const PAPER = "\uD83D\uDDCB"
+    const SCISSORS = "\u2702"
     const PIECES = ["", ROCK, PAPER, SCISSORS]
     const PIECE_CODES = {[ROCK]: 1, [PAPER]: 2, [SCISSORS]: 3}
     const CELL_ORDER = [4, 0, 2, 6, 8, 1, 3, 5, 7]
