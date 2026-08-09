@@ -42,36 +42,21 @@ let pendingAiRequest = null
 let aiRequestSequence = 0
 let aiMoveTimer = null
 let aiWatchdogTimer = null
-let statsReady = Promise.resolve()
+let gameStartingTurn = "X"
 
-let user = {
-    "rating": 100,
-    "bestRating": 100,
-    "ratingHistory": [100],
-    "WLR": [0, 0], "WLA": [0, 0],
-    "R": 0, "P": 0, "S": 0,
-    "R0": 0, "R1": 0, "R2": 0, "R3": 0, "R4": 0, "R5": 0, "R6": 0, "R7": 0, "R8": 0,
-    "P0": 0, "P1": 0, "P2": 0, "P3": 0, "P4": 0, "P5": 0, "P6": 0, "P7": 0, "P8": 0,
-    "S0": 0, "S1": 0, "S2": 0, "S3": 0, "S4": 0, "S5": 0, "S6": 0, "S7": 0, "S8": 0
-}
+const playerData = typeof globalThis !== "undefined"
+    ? globalThis.RpsxoPlayerData
+    : null
 
-async function save() {
-    if (typeof localforage === "undefined") return
+function callPlayerData(method, payload) {
+    if (!playerData || typeof playerData[method] !== "function") return
     try {
-        await localforage.setItem("user", user)
+        const result = playerData[method](payload)
+        if (result && typeof result.catch === "function") {
+            void result.catch(error => console.warn("Could not update player data", error))
+        }
     } catch (error) {
-        console.warn("Could not save RPSXO stats", error)
-    }
-}
-
-async function load() {
-    if (typeof localforage === "undefined") return
-    try {
-        const storedUser = await localforage.getItem("user")
-        if (storedUser) user = storedUser
-        else await save()
-    } catch (error) {
-        console.warn("Could not load RPSXO stats", error)
+        console.warn("Could not update player data", error)
     }
 }
 
@@ -163,7 +148,14 @@ function handleRockfishMessage(event, sourceWorker) {
     if (!chosenMove || !Array.isArray(chosenMove.move)) return playFallbackAiMove()
 
     const [cellIndex, piece] = chosenMove.move
-    if (!playMove(cells[cellIndex], piece)) playFallbackAiMove()
+    const source = sourceWorker ? "worker" : "inline"
+    if (!playMove(cells[cellIndex], piece, {
+        actor: "rockfish",
+        source,
+        botSkill: request.skill
+    })) {
+        playFallbackAiMove()
+    }
 }
 
 function handleRockfishError(event, sourceWorker) {
@@ -202,22 +194,43 @@ function cellClicked(event) {
     if (gameOver || (turn === "O" && gamemode === "singleplayer")) return
 
     const playedPiece = selectedMove
-    if (!playMove(event.currentTarget, playedPiece)) return
-
-    const moveToStat = {[ROCK]: "R", [PAPER]: "P", [SCISSORS]: "S"}
-    void statsReady.then(() => {
-        user[moveToStat[playedPiece]] += 1
-        return save()
-    })
+    const actor = gamemode === "singleplayer" ? "human" : `local_${turn.toLowerCase()}`
+    playMove(event.currentTarget, playedPiece, {actor, source: "click"})
 }
 
-function playMove(cell, piece = selectedMove) {
+function playMove(cell, piece = selectedMove, moveContext = {}) {
     if (gameOver || !cell || !moves.includes(piece)) return false
     if (cell.textContent && beatsDict[piece] !== cell.textContent) return false
 
+    const boardBefore = boardArray()
+    const cellIndex = Array.from(cells).indexOf(cell)
+    if (cellIndex < 0) return false
+    const actor = moveContext.actor || (turn === "X" ? "human" : "rockfish")
+
+    if (gamemode === "singleplayer") {
+        callPlayerData("recordMove", {
+            mode: gamemode,
+            starter: gameStartingTurn,
+            humanTurn: "X",
+            turn,
+            actor,
+            source: moveContext.source || "unknown",
+            boardBefore,
+            cell: cellIndex,
+            piece,
+            botSkill: moveContext.botSkill ?? botSkill
+        })
+    }
+
     cell.textContent = piece
-    if (findWin()) {
-        endGame()
+    const boardAfter = boardArray()
+    const winningLine = findWinningLine(boardAfter)
+    if (winningLine) {
+        endGame({
+            winner: turn,
+            winningPiece: piece,
+            winningLine
+        })
         return true
     }
 
@@ -236,23 +249,30 @@ function findWin() {
 }
 
 function boardHasWin(board) {
-    return winLines.some(line => {
+    return Boolean(findWinningLine(board))
+}
+
+function findWinningLine(board) {
+    return winLines.find(line => {
         const firstPiece = board[line[0]]
         return firstPiece && firstPiece === board[line[1]] && firstPiece === board[line[2]]
     })
 }
 
-function endGame() {
+function endGame(result) {
     turnTracker.textContent = `${turn} wins!`
     gameOver = true
     pendingAiRequest = null
+    if (gamemode === "singleplayer") callPlayerData("finishGame", result)
 }
 
-function restart(start) {
+function restart(start, reason = "restart") {
+    if (gamemode === "singleplayer") callPlayerData("abandonGame", reason)
     cancelAiSearch()
     cells.forEach(cell => { cell.textContent = "" })
     gameOver = false
     turn = start
+    gameStartingTurn = start
     turnTracker.textContent = `${start}'s turn`
     if (turn === "O" && gamemode === "singleplayer") {
         turnTracker.textContent = "O is thinking\u2026"
@@ -295,7 +315,7 @@ function playFallbackAiMove() {
     const chosenMove = skillBasedMovePick(analysis, botSkill)
     if (!chosenMove) return
     const [cellIndex, piece] = chosenMove.move
-    playMove(cells[cellIndex], piece)
+    playMove(cells[cellIndex], piece, {actor: "rockfish", source: "fallback"})
 }
 
 function runInlineRockfish(board, request) {
@@ -552,15 +572,16 @@ if (singleplayerBtn) singleplayerBtn.addEventListener("click", () => {
     twoplayerBtn.classList.remove("selectedBtn")
     gamemode = "singleplayer"
     singleplayerBtn.classList.add("selectedBtn")
-    restart("X")
+    restart("X", "mode_change")
 })
 
 if (twoplayerBtn) twoplayerBtn.addEventListener("click", () => {
     if (gamemode === "twoplayer") return
+    callPlayerData("abandonGame", "mode_change")
     singleplayerBtn.classList.remove("selectedBtn")
     gamemode = "twoplayer"
     twoplayerBtn.classList.add("selectedBtn")
-    restart("X")
+    restart("X", "mode_change")
 })
 
 if (botSkillBar) botSkillBar.addEventListener("input", function updateBotSkill() {
@@ -569,5 +590,10 @@ if (botSkillBar) botSkillBar.addEventListener("input", function updateBotSkill()
 })
 
 if (botSkillDisplay) botSkillDisplay.textContent = botSkill
+if (typeof globalThis !== "undefined" && typeof globalThis.addEventListener === "function") {
+    globalThis.addEventListener("pagehide", () => {
+        if (gamemode === "singleplayer") callPlayerData("abandonGame", "page_closed")
+    })
+}
 rockfish = createRockfishWorker()
-statsReady = load()
+callPlayerData("ready")

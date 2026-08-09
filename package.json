@@ -3,6 +3,6 @@
   "private": true,
   "scripts": {
     "test": "node --test",
-    "check": "node --check rockfish.js && node --check rpsxo.js"
+    "check": "node --check rockfish.js && node --check playerdata.js && node --check rpsxo.js && node --check statsloader.js"
   }
 }
