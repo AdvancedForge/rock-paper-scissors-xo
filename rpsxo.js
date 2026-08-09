@@ -372,15 +372,28 @@ function isAnalyzedMoveCandidate(move) {
         moves.includes(move.move[1]) && analyzedMoveScore(move) !== null
 }
 
+function rankedAnalyzedMoves(analyzedMoves) {
+    if (!Array.isArray(analyzedMoves) || analyzedMoves.length === 0) return []
+
+    const seenMoveKeys = new Set()
+    return analyzedMoves.map((move, index) => (
+        {index, move, score: analyzedMoveScore(move)}
+    )).filter(candidate => isAnalyzedMoveCandidate(candidate.move))
+        .sort((first, second) => second.score - first.score || first.index - second.index)
+        .filter(candidate => {
+            const key = analyzedMoveKey(candidate.move)
+            if (seenMoveKeys.has(key)) return false
+            seenMoveKeys.add(key)
+            return true
+        })
+}
+
 function rankedMoveProbabilities(analyzedMoves, skill) {
     if (!Array.isArray(analyzedMoves) || analyzedMoves.length === 0) return []
 
     const normalisedSkill = normalisedBotSkill(skill)
     const continuation = Math.cbrt(1 - normalisedSkill)
-    const rankedMoves = analyzedMoves.map((move, index) => (
-        {index, move, score: analyzedMoveScore(move)}
-    )).filter(candidate => isAnalyzedMoveCandidate(candidate.move))
-        .sort((first, second) => second.score - first.score || first.index - second.index)
+    const rankedMoves = rankedAnalyzedMoves(analyzedMoves)
     if (rankedMoves.length === 0) return []
 
     // A geometric distribution gives every rank some probability below skill
@@ -420,38 +433,42 @@ function rankedMoveProbabilities(analyzedMoves, skill) {
         groupStart = groupEnd
     }
 
-    let totalWeight = weights.reduce((sum, weight) => sum + weight, 0)
-    let probabilities = weights.map(weight => weight / totalWeight)
-
     // Search scores have three qualitatively different bands: a proven win,
     // an unresolved heuristic value, and a proven loss. As skill rises, ensure
     // Rockfish increasingly chooses from the best available outcome band while
     // retaining ranked variety inside that band.
     const bestOutcomeBand = outcomeBand(rankedMoves[0].score)
-    const bestBandProbability = probabilities.reduce((sum, probability, index) => (
-        analyzedMoveScore(analyzedMoves[index]) !== null &&
-        outcomeBand(analyzedMoveScore(analyzedMoves[index])) === bestOutcomeBand
-            ? sum + probability
-            : sum
+    const bestBandMoves = rankedMoves.filter(candidate => outcomeBand(candidate.score) === bestOutcomeBand)
+    const bestBandIndexes = new Set(bestBandMoves.map(candidate => candidate.index))
+    const bestBandWeight = bestBandMoves.reduce((sum, candidate) => (
+        sum + weights[candidate.index]
+    ), 0)
+    const otherBandWeight = rankedMoves.reduce((sum, candidate) => (
+        bestBandIndexes.has(candidate.index) ? sum : sum + weights[candidate.index]
     ), 0)
 
-    // Obvious outcomes should become reliable faster than subtle positional
-    // preferences. At the default skill this makes a known one-move win likely,
-    // while the ranked weights below still vary close strategic choices.
-    const tacticalAccuracy = 1 - Math.pow(1 - normalisedSkill, 3)
-    if (bestBandProbability < tacticalAccuracy && bestBandProbability < 1) {
-        const bestBandScale = tacticalAccuracy / bestBandProbability
-        const otherBandScale = (1 - tacticalAccuracy) / (1 - bestBandProbability)
-        probabilities = probabilities.map((probability, index) => (
-            analyzedMoveScore(analyzedMoves[index]) !== null &&
-            outcomeBand(analyzedMoveScore(analyzedMoves[index])) === bestOutcomeBand
-                ? probability * bestBandScale
-                : probability * otherBandScale
-        ))
-    }
+    // Skill controls how much Rockfish insists on the best known outcome band.
+    // The remaining mass respects how many legal alternatives exist: one safe
+    // move among twenty losing moves is therefore easier to miss than one safe
+    // move among two. Skill 1 stays uniform and skill 1000 stays exact.
+    const uniformBestBandShare = bestBandMoves.length / rankedMoves.length
+    const targetOtherBandProbability = (1 - uniformBestBandShare) * (1 - normalisedSkill)
+    const targetBestBandProbability = 1 - targetOtherBandProbability
+    const probabilities = weights.map((weight, index) => {
+        if (bestBandIndexes.has(index)) {
+            return bestBandWeight > 0
+                ? targetBestBandProbability * (weight / bestBandWeight)
+                : 0
+        }
+        return otherBandWeight > 0
+            ? targetOtherBandProbability * (weight / otherBandWeight)
+            : 0
+    })
 
-    totalWeight = probabilities.reduce((sum, probability) => sum + probability, 0)
-    return probabilities.map(probability => probability / totalWeight)
+    const totalProbability = probabilities.reduce((sum, probability) => sum + probability, 0)
+    return totalProbability > 0
+        ? probabilities.map(probability => probability / totalProbability)
+        : probabilities
 }
 
 function analyzedMoveKey(move) {
@@ -469,6 +486,9 @@ function moveSelectionProbabilities(analyzedMoves, skill, previousAnalysis = nul
     }
 
     const previousProbabilities = rankedMoveProbabilities(previousAnalysis, skill)
+    const canonicalCurrentIndexes = new Set(
+        rankedAnalyzedMoves(analyzedMoves).map(candidate => candidate.index)
+    )
     const previousByMove = new Map()
     previousAnalysis.forEach((move, index) => {
         const key = analyzedMoveKey(move)
@@ -479,7 +499,7 @@ function moveSelectionProbabilities(analyzedMoves, skill, previousAnalysis = nul
     })
 
     const blended = currentProbabilities.map((probability, index) => {
-        if (!isAnalyzedMoveCandidate(analyzedMoves[index])) return 0
+        if (!canonicalCurrentIndexes.has(index)) return 0
         const previousProbability = previousByMove.get(analyzedMoveKey(analyzedMoves[index])) || 0
         return (blend * probability) + ((1 - blend) * previousProbability)
     })

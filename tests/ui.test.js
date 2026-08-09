@@ -6,6 +6,9 @@ const vm = require("node:vm")
 
 const engine = require("../rockfish")
 const uiSource = readFileSync(path.join(__dirname, "..", "rpsxo.js"), "utf8")
+const UNIQUE_MOVE_SHAPES = Array.from({length: 9}, (_, cell) => (
+    ["☗", "🗋", "✂"].map(piece => [cell, piece])
+)).flat()
 
 test("every HTML entry point declares UTF-8 before page content", () => {
     for (const filename of ["index.html", "playground.html", "tutorial.html"]) {
@@ -373,10 +376,10 @@ test("a one-point skill change cross-fades instead of jumping depth policies", (
 test("equal scores stay equal and proven outcomes become more reliable with skill", () => {
     const harness = createHarness()
     const analysis = [
-        {move: [0, "☗"], score: 10000},
-        {move: [1, "🗋"], score: 10000},
-        {move: [2, "✂"], score: 20},
-        ...Array.from({length: 16}, (_, index) => ({move: [index % 9, "☗"], score: -10000}))
+        {move: UNIQUE_MOVE_SHAPES[0], score: 10000},
+        {move: UNIQUE_MOVE_SHAPES[1], score: 10000},
+        {move: UNIQUE_MOVE_SHAPES[2], score: 20},
+        ...UNIQUE_MOVE_SHAPES.slice(3, 19).map(move => ({move, score: -10000}))
     ]
 
     let previousWinProbability = 0
@@ -392,8 +395,10 @@ test("equal scores stay equal and proven outcomes become more reliable with skil
 
         assert.ok(Math.abs(probabilities[0] - probabilities[1]) < 1e-12)
         const normalisedSkill = (skill - 1) / 999
-        const tacticalAccuracy = 1 - Math.pow(1 - normalisedSkill, 3)
-        assert.ok(winProbability + 1e-12 >= tacticalAccuracy)
+        const uniformWinShare = 2 / analysis.length
+        const targetWinProbability = uniformWinShare +
+            ((1 - uniformWinShare) * normalisedSkill)
+        assert.ok(Math.abs(winProbability - targetWinProbability) < 1e-12)
         assert.ok(winProbability + 1e-12 >= previousWinProbability)
         assert.ok(lossProbability <= previousLossProbability + 1e-12)
         assert.ok(expectedScore + 1e-9 >= previousExpectedScore)
@@ -407,24 +412,97 @@ test("equal scores stay equal and proven outcomes become more reliable with skil
     assert.ok(maximumSkill.slice(2).every(probability => probability === 0))
 })
 
-test("obvious tactical moves improve on a deliberate skill curve", () => {
+test("more instant-loss alternatives create more aggregate mistake probability", () => {
     const harness = createHarness()
-    const analysis = [
-        {move: [0, "☗"], score: 10000},
-        ...Array.from({length: 20}, (_, index) => ({move: [index % 9, "🗋"], score: -10000}))
-    ]
-    const expectedMinimums = new Map([
-        [100, 0.26],
-        [300, 0.65],
-        [500, 0.87],
-        [700, 0.97],
-        [900, 0.998]
-    ])
+    const lossCounts = [1, 2, 5, 10, 20, 26]
+    const skills = [1, 100, 300, 500, 700, 900, 1000]
+    const lossMassBySkill = new Map()
 
-    for (const [skill, expectedMinimum] of expectedMinimums) {
+    for (const skill of skills) {
+        let previousLossMass = -1
+        const lossesAtThisSkill = []
+        for (const lossCount of lossCounts) {
+            const analysis = [
+                {move: UNIQUE_MOVE_SHAPES[0], score: 0},
+                ...UNIQUE_MOVE_SHAPES.slice(1, lossCount + 1).map(move => ({move, score: -10000}))
+            ]
+            const probabilities = Array.from(harness.context.moveSelectionProbabilities(analysis, skill))
+            const lossProbabilities = probabilities.slice(1)
+            const lossMass = lossProbabilities.reduce((sum, probability) => sum + probability, 0)
+            const normalisedSkill = (skill - 1) / 999
+            const expectedLossMass = (1 - normalisedSkill) * (lossCount / (lossCount + 1))
+
+            assert.ok(Math.abs(lossMass - expectedLossMass) < 1e-12)
+            assert.ok(lossMass > previousLossMass || skill === 1000)
+            assert.ok(lossProbabilities.every(probability => (
+                Math.abs(probability - lossProbabilities[0]) < 1e-12
+            )))
+            previousLossMass = lossMass
+            lossesAtThisSkill.push(lossMass)
+        }
+        lossMassBySkill.set(skill, lossesAtThisSkill)
+    }
+
+    for (const lossIndex of lossCounts.keys()) {
+        const masses = skills.map(skill => lossMassBySkill.get(skill)[lossIndex])
+        masses.slice(1).forEach((mass, index) => assert.ok(mass <= masses[index] + 1e-12))
+    }
+
+    assert.ok(lossMassBySkill.get(300)[4] > 0.65)
+    assert.equal(lossMassBySkill.get(1000)[5], 0)
+})
+
+test("real tactical positions retain meaningful instant-loss probability", () => {
+    const harness = createHarness()
+    const board = ["☗", "☗", "", "", "", "", "", "", ""]
+    const analysis = engine.analyzePosition(board, {maxDepth: 2}).analysis
+    const immediateWins = analysis.filter(move => move.score >= 9000)
+    const instantLosses = analysis.filter(move => move.score <= -9000)
+    const unresolved = analysis.filter(move => Math.abs(move.score) < 9000)
+
+    assert.equal(analysis.length, 23)
+    assert.equal(immediateWins.length, 1)
+    assert.equal(unresolved.length, 3)
+    assert.equal(instantLosses.length, 19)
+
+    const expectedRanges = new Map([
+        [300, [0.40, 0.50]],
+        [500, [0.20, 0.28]],
+        [700, [0.06, 0.11]],
+        [900, [0.005, 0.02]]
+    ])
+    for (const [skill, [minimum, maximum]] of expectedRanges) {
         const probabilities = Array.from(harness.context.moveSelectionProbabilities(analysis, skill))
-        assert.ok(probabilities[0] >= expectedMinimum, `skill ${skill}: ${probabilities[0]}`)
-        assert.ok(probabilities[0] < 1)
+        const lossMass = probabilities.reduce((sum, probability, index) => (
+            analysis[index].score <= -9000 ? sum + probability : sum
+        ), 0)
+        assert.ok(lossMass >= minimum && lossMass <= maximum, `skill ${skill}: ${lossMass}`)
+    }
+})
+
+test("outcome probabilities stay numerically smooth at very high skill", () => {
+    const harness = createHarness()
+    const board = ["", "", "", "✂", "", "☗", "", "", ""]
+    const analysis = engine.analyzePosition(board, {maxDepth: 2}).analysis
+    const lossCount = analysis.filter(move => move.score <= -9000).length
+    let previousLossMass = Infinity
+    let previousExpectedScore = -Infinity
+
+    for (let skill = 950; skill <= 1000; skill += 1) {
+        const probabilities = Array.from(harness.context.moveSelectionProbabilities(analysis, skill))
+        const lossMass = probabilities.reduce((sum, probability, index) => (
+            analysis[index].score <= -9000 ? sum + probability : sum
+        ), 0)
+        const expectedLossMass = (1 - ((skill - 1) / 999)) * (lossCount / analysis.length)
+        const expectedScore = probabilities.reduce((sum, probability, index) => (
+            sum + (probability * analysis[index].score)
+        ), 0)
+
+        assert.ok(Math.abs(lossMass - expectedLossMass) < 1e-12, `skill ${skill}: ${lossMass}`)
+        assert.ok(lossMass <= previousLossMass + 1e-15)
+        assert.ok(expectedScore + 1e-9 >= previousExpectedScore, `skill ${skill}: ${expectedScore}`)
+        previousLossMass = lossMass
+        previousExpectedScore = expectedScore
     }
 })
 
@@ -444,6 +522,48 @@ test("malformed analysis entries are never selected", () => {
     const probabilities = Array.from(harness.context.moveSelectionProbabilities(analysis, 1))
 
     assert.deepEqual(probabilities, [1, 0, 0, 0, 0, 0, 0, 0, 0])
+})
+
+test("duplicate analysis entries do not manufacture extra alternatives", () => {
+    const harness = createHarness()
+    const original = [
+        {move: [0, "☗"], score: 0},
+        {move: [1, "🗋"], score: -10000}
+    ]
+    const duplicated = [...original, {move: [1, "🗋"], score: -10000}]
+    const previous = [
+        {move: [1, "🗋"], score: 10},
+        {move: [0, "☗"], score: 0}
+    ]
+
+    for (const blend of [0, 0.5, 1]) {
+        const originalProbabilities = Array.from(harness.context.moveSelectionProbabilities(
+            original, 300, previous, blend
+        ))
+        const duplicatedProbabilities = Array.from(harness.context.moveSelectionProbabilities(
+            duplicated, 300, previous, blend
+        ))
+
+        assert.deepEqual(duplicatedProbabilities.slice(0, 2), originalProbabilities)
+        assert.equal(duplicatedProbabilities[2], 0)
+    }
+
+    const conflictingDuplicates = [
+        original[0],
+        original[1],
+        {move: [1, "🗋"], score: 10000}
+    ]
+    const canonicalAnalysis = [original[0], conflictingDuplicates[2]]
+    const canonicalProbabilities = Array.from(harness.context.moveSelectionProbabilities(
+        canonicalAnalysis, 300, previous, 0.5
+    ))
+    const conflictingProbabilities = Array.from(harness.context.moveSelectionProbabilities(
+        conflictingDuplicates, 300, previous, 0.5
+    ))
+
+    assert.equal(conflictingProbabilities[0], canonicalProbabilities[0])
+    assert.equal(conflictingProbabilities[1], 0)
+    assert.equal(conflictingProbabilities[2], canonicalProbabilities[1])
 })
 
 test("a stale worker reply cannot mutate a restarted two-player game", () => {
