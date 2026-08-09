@@ -113,13 +113,27 @@ test("cache entries cannot leak values between depth settings", () => {
     assert.deepEqual(shallowAfter, shallowBefore)
 })
 
-test("skill maps monotonically to an explicit one-to-ten ply target", () => {
+test("skill maps monotonically to stable even search depths", () => {
     const skills = [1, 100, 300, 500, 700, 850, 1000]
     const depths = skills.map(engine.skillToDepth)
-    assert.equal(depths[0], 1)
+    assert.equal(depths[0], 2)
     assert.equal(depths[2], 2)
     assert.equal(depths.at(-1), 10)
+    depths.forEach(depth => assert.equal(depth % 2, 0))
     depths.slice(1).forEach((depth, index) => assert.ok(depth >= depths[index]))
+})
+
+test("a new depth tier exposes its prior analysis for a smooth cross-fade", () => {
+    const result = engine.analyzePosition(EMPTY_BOARD, {skill: 355})
+
+    assert.equal(result.depth, 4)
+    assert.equal(result.previousDepth, 2)
+    assert.ok(result.depthBlend > 0 && result.depthBlend < 0.01, result.depthBlend)
+    assert.equal(result.previousAnalysis.length, result.analysis.length)
+    assert.deepEqual(
+        new Set(result.previousAnalysis.map(entry => JSON.stringify(entry.move))),
+        new Set(result.analysis.map(entry => JSON.stringify(entry.move)))
+    )
 })
 
 test("depth ten from an empty board stays within the optimized node budget", () => {
@@ -127,6 +141,36 @@ test("depth ten from an empty board stays within the optimized node budget", () 
     const result = engine.analyzePosition(EMPTY_BOARD, {maxDepth: 10})
     assert.equal(result.depth, 10)
     assert.ok(result.nodes < 250000, `searched ${result.nodes} nodes`)
+})
+
+test("an interrupted iterative search returns a stable depth parity", () => {
+    engine.clearCaches()
+    const result = engine.analyzePosition(EMPTY_BOARD, {
+        maxDepth: 10,
+        timeLimitMs: 1,
+        iterative: true
+    })
+    assert.ok(result.depth >= 2)
+    assert.equal(result.depth % 2, 0)
+    if (result.depth < result.targetDepth) {
+        assert.equal(result.previousAnalysis, null)
+        assert.equal(result.previousDepth, null)
+        assert.equal(result.depthBlend, 1)
+    }
+})
+
+test("an interrupted skill search never blends an unfinished depth tier", () => {
+    engine.clearCaches()
+    const result = engine.analyzePosition(EMPTY_BOARD, {
+        skill: 1000,
+        timeLimitMs: 1,
+        iterative: true
+    })
+
+    assert.ok(result.depth < result.targetDepth)
+    assert.equal(result.previousAnalysis, null)
+    assert.equal(result.previousDepth, null)
+    assert.equal(result.depthBlend, 1)
 })
 
 test("worker messages echo request identity and report completed depth", () => {

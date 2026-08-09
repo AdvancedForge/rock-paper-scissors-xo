@@ -27,6 +27,9 @@ const winLines = [
 ]
 const moves = [ROCK, PAPER, SCISSORS]
 const beatsDict = {[ROCK]: SCISSORS, [PAPER]: ROCK, [SCISSORS]: PAPER}
+const PROVEN_SCORE = 9000
+const HEURISTIC_SCORE_PER_RANK = 40
+const MAX_HEURISTIC_GAP_RANKS = 4
 const useInlineRockfish = typeof location !== "undefined" && location.protocol === "file:"
 
 let gamemode = "singleplayer"
@@ -151,7 +154,12 @@ function handleRockfishMessage(event, sourceWorker) {
         return playFallbackAiMove()
     }
 
-    const chosenMove = skillBasedMovePick(data.analysis, request.skill)
+    const chosenMove = skillBasedMovePick(
+        data.analysis,
+        request.skill,
+        data.previousAnalysis,
+        data.depthBlend
+    )
     if (!chosenMove || !Array.isArray(chosenMove.move)) return playFallbackAiMove()
 
     const [cellIndex, piece] = chosenMove.move
@@ -224,7 +232,10 @@ function playMove(cell, piece = selectedMove) {
 }
 
 function findWin() {
-    const board = boardArray()
+    return boardHasWin(boardArray())
+}
+
+function boardHasWin(board) {
     return winLines.some(line => {
         const firstPiece = board[line[0]]
         return firstPiece && firstPiece === board[line[1]] && firstPiece === board[line[2]]
@@ -263,9 +274,27 @@ function legalAiMoves(board) {
 
 function playFallbackAiMove() {
     if (gamemode !== "singleplayer" || turn !== "O" || gameOver) return
-    const outcomes = legalAiMoves(boardArray())
-    if (outcomes.length === 0) return
-    const [cellIndex, piece] = outcomes[Math.floor(Math.random() * outcomes.length)]
+    const board = boardArray()
+    const analysis = legalAiMoves(board).map(move => {
+        const [cellIndex, piece] = move
+        const nextBoard = [...board]
+        nextBoard[cellIndex] = piece
+
+        let score = 0
+        if (boardHasWin(nextBoard)) {
+            score = PROVEN_SCORE
+        } else if (legalAiMoves(nextBoard).some(reply => {
+            const replyBoard = [...nextBoard]
+            replyBoard[reply[0]] = reply[1]
+            return boardHasWin(replyBoard)
+        })) {
+            score = -PROVEN_SCORE
+        }
+        return {move, score}
+    })
+    const chosenMove = skillBasedMovePick(analysis, botSkill)
+    if (!chosenMove) return
+    const [cellIndex, piece] = chosenMove.move
     playMove(cells[cellIndex], piece)
 }
 
@@ -320,29 +349,165 @@ function aiMove() {
     }
 }
 
-function skillBasedMovePick(analyzedMoves, skill) {
-    if (!Array.isArray(analyzedMoves) || analyzedMoves.length === 0) return null
-
+function normalisedBotSkill(skill) {
     const numericSkill = Math.min(1000, Math.max(1, Number(skill) || 1))
-    const normalisedSkill = (numericSkill - 1) / 999
-    const temperature = 0.5 + (60 * Math.pow(1 - normalisedSkill, 2))
-    const randomBlend = Math.pow(1 - normalisedSkill, 4)
-    const maxScore = analyzedMoves[0].score
-    const moveWeights = analyzedMoves.map(move => (
-        Math.exp(Math.max(-700, (move.score - maxScore) / temperature))
-    ))
-    const totalWeight = moveWeights.reduce((sum, weight) => sum + weight, 0)
+    return (numericSkill - 1) / 999
+}
+
+function outcomeBand(score) {
+    if (score >= PROVEN_SCORE) return 1
+    if (score <= -PROVEN_SCORE) return -1
+    return 0
+}
+
+function analyzedMoveScore(move) {
+    return typeof move?.score === "number" && Number.isFinite(move.score)
+        ? move.score
+        : null
+}
+
+function isAnalyzedMoveCandidate(move) {
+    return Array.isArray(move?.move) &&
+        Number.isInteger(move.move[0]) && move.move[0] >= 0 && move.move[0] < cells.length &&
+        moves.includes(move.move[1]) && analyzedMoveScore(move) !== null
+}
+
+function rankedMoveProbabilities(analyzedMoves, skill) {
+    if (!Array.isArray(analyzedMoves) || analyzedMoves.length === 0) return []
+
+    const normalisedSkill = normalisedBotSkill(skill)
+    const continuation = Math.cbrt(1 - normalisedSkill)
+    const rankedMoves = analyzedMoves.map((move, index) => (
+        {index, move, score: analyzedMoveScore(move)}
+    )).filter(candidate => isAnalyzedMoveCandidate(candidate.move))
+        .sort((first, second) => second.score - first.score || first.index - second.index)
+    if (rankedMoves.length === 0) return []
+
+    // A geometric distribution gives every rank some probability below skill
+    // 1000. Exact score ties share the mass of all ranks occupied by that tie,
+    // so symmetric moves remain equally likely without their count swamping a
+    // better or worse score group.
+    const weights = Array(analyzedMoves.length).fill(0)
+    let rank = 0
+    let previousGroupScore = null
+    for (let groupStart = 0; groupStart < rankedMoves.length;) {
+        let groupEnd = groupStart + 1
+        while (groupEnd < rankedMoves.length &&
+            rankedMoves[groupEnd].score === rankedMoves[groupStart].score) {
+            groupEnd += 1
+        }
+
+        const groupSize = groupEnd - groupStart
+        const groupScore = rankedMoves[groupStart].score
+        if (previousGroupScore !== null &&
+            outcomeBand(previousGroupScore) === 0 && outcomeBand(groupScore) === 0) {
+            const heuristicGapRanks = Math.min(
+                MAX_HEURISTIC_GAP_RANKS,
+                Math.floor((previousGroupScore - groupScore) / HEURISTIC_SCORE_PER_RANK)
+            )
+            rank += Math.max(0, heuristicGapRanks)
+        }
+
+        let groupWeight = 0
+        for (let offset = 0; offset < groupSize; offset += 1) {
+            groupWeight += Math.pow(continuation, rank + offset)
+        }
+        for (let index = groupStart; index < groupEnd; index += 1) {
+            weights[rankedMoves[index].index] = groupWeight / groupSize
+        }
+        rank += groupSize
+        previousGroupScore = groupScore
+        groupStart = groupEnd
+    }
+
+    let totalWeight = weights.reduce((sum, weight) => sum + weight, 0)
+    let probabilities = weights.map(weight => weight / totalWeight)
+
+    // Search scores have three qualitatively different bands: a proven win,
+    // an unresolved heuristic value, and a proven loss. As skill rises, ensure
+    // Rockfish increasingly chooses from the best available outcome band while
+    // retaining ranked variety inside that band.
+    const bestOutcomeBand = outcomeBand(rankedMoves[0].score)
+    const bestBandProbability = probabilities.reduce((sum, probability, index) => (
+        analyzedMoveScore(analyzedMoves[index]) !== null &&
+        outcomeBand(analyzedMoveScore(analyzedMoves[index])) === bestOutcomeBand
+            ? sum + probability
+            : sum
+    ), 0)
+
+    // Obvious outcomes should become reliable faster than subtle positional
+    // preferences. At the default skill this makes a known one-move win likely,
+    // while the ranked weights below still vary close strategic choices.
+    const tacticalAccuracy = 1 - Math.pow(1 - normalisedSkill, 3)
+    if (bestBandProbability < tacticalAccuracy && bestBandProbability < 1) {
+        const bestBandScale = tacticalAccuracy / bestBandProbability
+        const otherBandScale = (1 - tacticalAccuracy) / (1 - bestBandProbability)
+        probabilities = probabilities.map((probability, index) => (
+            analyzedMoveScore(analyzedMoves[index]) !== null &&
+            outcomeBand(analyzedMoveScore(analyzedMoves[index])) === bestOutcomeBand
+                ? probability * bestBandScale
+                : probability * otherBandScale
+        ))
+    }
+
+    totalWeight = probabilities.reduce((sum, probability) => sum + probability, 0)
+    return probabilities.map(probability => probability / totalWeight)
+}
+
+function analyzedMoveKey(move) {
+    return Array.isArray(move?.move) ? `${move.move[0]}|${move.move[1]}` : null
+}
+
+function moveSelectionProbabilities(analyzedMoves, skill, previousAnalysis = null, depthBlend = 1) {
+    const currentProbabilities = rankedMoveProbabilities(analyzedMoves, skill)
+    const blend = typeof depthBlend === "number" && Number.isFinite(depthBlend)
+        ? Math.min(1, Math.max(0, depthBlend))
+        : 1
+    if (!Array.isArray(previousAnalysis) || previousAnalysis.length === 0 ||
+        blend >= 1) {
+        return currentProbabilities
+    }
+
+    const previousProbabilities = rankedMoveProbabilities(previousAnalysis, skill)
+    const previousByMove = new Map()
+    previousAnalysis.forEach((move, index) => {
+        const key = analyzedMoveKey(move)
+        const probability = previousProbabilities[index]
+        if (key !== null && probability > 0) {
+            previousByMove.set(key, (previousByMove.get(key) || 0) + probability)
+        }
+    })
+
+    const blended = currentProbabilities.map((probability, index) => {
+        if (!isAnalyzedMoveCandidate(analyzedMoves[index])) return 0
+        const previousProbability = previousByMove.get(analyzedMoveKey(analyzedMoves[index])) || 0
+        return (blend * probability) + ((1 - blend) * previousProbability)
+    })
+    const totalProbability = blended.reduce((sum, probability) => sum + probability, 0)
+    return totalProbability > 0
+        ? blended.map(probability => probability / totalProbability)
+        : currentProbabilities
+}
+
+function skillBasedMovePick(analyzedMoves, skill, previousAnalysis = null, depthBlend = 1) {
+    const probabilities = moveSelectionProbabilities(
+        analyzedMoves,
+        skill,
+        previousAnalysis,
+        depthBlend
+    )
+    if (probabilities.length === 0) return null
 
     let cumulativeProbability = 0
+    let fallbackIndex = -1
     const randomNumber = Math.random()
     for (let index = 0; index < analyzedMoves.length; index += 1) {
-        const randomProbability = randomBlend / analyzedMoves.length
-        const informedProbability = (1 - randomBlend) * (moveWeights[index] / totalWeight)
-        cumulativeProbability += randomProbability + informedProbability
+        if (probabilities[index] > 0) fallbackIndex = index
+        cumulativeProbability += probabilities[index]
         if (randomNumber < cumulativeProbability) return analyzedMoves[index]
     }
 
-    return analyzedMoves[analyzedMoves.length - 1]
+    return fallbackIndex >= 0 ? analyzedMoves[fallbackIndex] : null
 }
 
 function changeSelection(newMove) {

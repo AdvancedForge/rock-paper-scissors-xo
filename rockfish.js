@@ -322,12 +322,27 @@
 
     function skillToDepth(skill) {
         const normalisedSkill = (clamp(Number(skill) || 1, 1, 1000) - 1) / 999
-        return clamp(1 + Math.round(9 * normalisedSkill * normalisedSkill), 1, MAX_DEPTH)
+        // The evaluator is deliberately kept on the same side-to-move parity.
+        // Move-choice weighting supplies the smooth difficulty changes between
+        // these stable 2/4/6/8/10-ply search tiers.
+        return clamp(2 + (2 * Math.round(4 * normalisedSkill * normalisedSkill)), 2, MAX_DEPTH)
     }
 
     function skillToTimeLimit(skill) {
         const normalisedSkill = (clamp(Number(skill) || 1, 1, 1000) - 1) / 999
         return 25 + Math.round(425 * normalisedSkill * normalisedSkill)
+    }
+
+    function skillToDepthBlend(skill, completedDepth) {
+        const normalisedSkill = (clamp(Number(skill) || 1, 1, 1000) - 1) / 999
+        const continuousTier = 4 * normalisedSkill * normalisedSkill
+        const completedTier = (completedDepth - 2) / 2
+        if (!Number.isInteger(completedTier) || completedTier <= 0) return 1
+
+        const tierStart = completedTier - 0.5
+        // Cross-fade through the first half of the new tier, then use that
+        // completed depth alone until the next tier starts.
+        return clamp((continuousTier - tierStart) / 0.5, 0, 1)
     }
 
     function analyzePosition(board, options = {}) {
@@ -339,7 +354,8 @@
         const requestedDepth = options.maxDepth ?? skillToDepth(options.skill ?? 300)
         const targetDepth = clamp(Math.trunc(requestedDepth), 1, MAX_DEPTH)
         const timeLimitMs = options.timeLimitMs ?? Infinity
-        const iterative = options.iterative ?? Number.isFinite(timeLimitMs)
+        const usesSkillProfile = options.maxDepth === undefined
+        const iterative = options.iterative ?? (usesSkillProfile || Number.isFinite(timeLimitMs))
         const startedAt = now()
 
         searchDeadline = Number.isFinite(timeLimitMs) ? startedAt + Math.max(1, timeLimitMs) : Infinity
@@ -348,15 +364,22 @@
 
         let completedDepth = 0
         let completedAnalysis = null
+        let previousDepth = 0
+        let previousAnalysis = null
         let rootOrder = null
         const firstDepth = iterative ? 1 : targetDepth
+        const targetParity = targetDepth % 2
 
         for (let depth = firstDepth; depth <= targetDepth; depth += 1) {
             try {
                 const nextAnalysis = analyzeAtDepth(state, depth, rootOrder)
-                completedAnalysis = nextAnalysis
-                completedDepth = depth
                 rootOrder = nextAnalysis.map(move => move.moveCode)
+                if (!iterative || depth % 2 === targetParity) {
+                    previousAnalysis = completedAnalysis
+                    previousDepth = completedDepth
+                    completedAnalysis = nextAnalysis
+                    completedDepth = depth
+                }
                 if (!iterative) break
             } catch (error) {
                 if (error !== SEARCH_TIMEOUT) throw error
@@ -364,16 +387,28 @@
             }
         }
 
-        // Depth one is tiny and gives a safe legal response even on an unusually
-        // slow device whose deadline expired during worker startup.
+        // The minimum stable tier is tiny and gives a legal response even on an
+        // unusually slow device whose deadline expired during worker startup.
         if (!completedAnalysis) {
             searchDeadline = Infinity
-            completedAnalysis = analyzeAtDepth(state, 1, null)
-            completedDepth = 1
+            const fallbackDepth = Math.min(targetDepth, targetParity === 0 ? 2 : 1)
+            completedAnalysis = analyzeAtDepth(state, fallbackDepth, null)
+            completedDepth = fallbackDepth
         }
+
+        const canBlendDepths = usesSkillProfile && completedDepth === targetDepth &&
+            previousAnalysis && previousDepth === completedDepth - 2
+        const depthBlend = canBlendDepths
+            ? skillToDepthBlend(options.skill ?? 300, completedDepth)
+            : 1
 
         return {
             analysis: completedAnalysis.map(({move, score}) => ({move, score})),
+            previousAnalysis: canBlendDepths
+                ? previousAnalysis.map(({move, score}) => ({move, score}))
+                : null,
+            previousDepth: canBlendDepths ? previousDepth : null,
+            depthBlend,
             depth: completedDepth,
             targetDepth,
             nodes: searchedNodes,

@@ -4,6 +4,7 @@ const path = require("node:path")
 const test = require("node:test")
 const vm = require("node:vm")
 
+const engine = require("../rockfish")
 const uiSource = readFileSync(path.join(__dirname, "..", "rpsxo.js"), "utf8")
 
 test("every HTML entry point declares UTF-8 before page content", () => {
@@ -146,7 +147,7 @@ function createHarness(randomValue = 0, options = {}) {
     vm.createContext(context)
     vm.runInContext(uiSource, context)
 
-    return {cells, consoleErrors, elements, runTimers, savedUsers, timers, workers}
+    return {cells, consoleErrors, context, elements, runTimers, savedUsers, timers, workers}
 }
 
 test("the displayed default skill is the skill sent to Rockfish", () => {
@@ -265,6 +266,186 @@ test("skill one keeps the deliberately random beginner behavior", () => {
     assert.equal(harness.cells[3].textContent, "✂")
 })
 
+test("move-choice weighting strengthens smoothly without premature determinism", () => {
+    const harness = createHarness()
+    const analysis = [
+        {move: [0, "☗"], score: 30},
+        {move: [1, "🗋"], score: 20},
+        {move: [2, "✂"], score: 10}
+    ]
+    const skills = [1, 100, 300, 500, 700, 900, 1000]
+    const probabilitySets = skills.map(skill => (
+        Array.from(harness.context.moveSelectionProbabilities(analysis, skill))
+    ))
+
+    probabilitySets.forEach(probabilities => {
+        assert.ok(probabilities.every(probability => Number.isFinite(probability) && probability >= 0))
+        assert.ok(Math.abs(probabilities.reduce((sum, probability) => sum + probability, 0) - 1) < 1e-12)
+    })
+    probabilitySets.slice(1).forEach((probabilities, index) => {
+        assert.ok(probabilities[0] >= probabilitySets[index][0])
+    })
+
+    assert.deepEqual(probabilitySets[0].map(value => Math.round(value * 3)), [1, 1, 1])
+    assert.ok(probabilitySets[4][0] < 0.6)
+    assert.ok(probabilitySets[5][0] < 0.8)
+    assert.deepEqual(probabilitySets.at(-1), [1, 0, 0])
+})
+
+test("large heuristic gaps matter more than near ties", () => {
+    const harness = createHarness()
+    const closeScores = [
+        {move: [0, "☗"], score: 1},
+        {move: [1, "🗋"], score: 0}
+    ]
+    const distantScores = [
+        {move: [0, "☗"], score: 800},
+        {move: [1, "🗋"], score: -800}
+    ]
+    const closeProbabilities = Array.from(harness.context.moveSelectionProbabilities(closeScores, 700))
+    const distantProbabilities = Array.from(harness.context.moveSelectionProbabilities(distantScores, 700))
+
+    assert.ok(closeProbabilities[1] > 0.3)
+    assert.ok(distantProbabilities[1] < 0.15)
+    assert.ok(distantProbabilities[1] < closeProbabilities[1] / 2)
+})
+
+test("depth cross-fades join moves by identity and mix probability vectors", () => {
+    const harness = createHarness()
+    const currentAnalysis = [
+        {move: [0, "☗"], score: 20},
+        {move: [1, "🗋"], score: 10}
+    ]
+    const previousAnalysis = [
+        {move: [1, "🗋"], score: 20},
+        {move: [0, "☗"], score: 10}
+    ]
+
+    const previousOnly = Array.from(harness.context.moveSelectionProbabilities(
+        currentAnalysis, 500, previousAnalysis, 0
+    ))
+    const halfway = Array.from(harness.context.moveSelectionProbabilities(
+        currentAnalysis, 500, previousAnalysis, 0.5
+    ))
+    const currentOnly = Array.from(harness.context.moveSelectionProbabilities(
+        currentAnalysis, 500, previousAnalysis, 1
+    ))
+    const malformedBlend = Array.from(harness.context.moveSelectionProbabilities(
+        currentAnalysis, 500, previousAnalysis, null
+    ))
+
+    assert.ok(previousOnly[1] > previousOnly[0])
+    assert.ok(currentOnly[0] > currentOnly[1])
+    assert.deepEqual(malformedBlend, currentOnly)
+    assert.ok(Math.abs(halfway[0] - 0.5) < 1e-12)
+    assert.ok(Math.abs(halfway[1] - 0.5) < 1e-12)
+})
+
+test("a one-point skill change cross-fades instead of jumping depth policies", () => {
+    const harness = createHarness()
+    const board = ["☗", "🗋", "☗", "✂", "", "✂", "🗋", "✂", "🗋"]
+    const referenceScores = new Map(engine.analyzePosition(board, {maxDepth: 10}).analysis.map(entry => (
+        [JSON.stringify(entry.move), entry.score]
+    )))
+    const expectedReferenceScore = (result, skill) => {
+        const probabilities = Array.from(harness.context.moveSelectionProbabilities(
+            result.analysis,
+            skill,
+            result.previousAnalysis,
+            result.depthBlend
+        ))
+        return probabilities.reduce((sum, probability, index) => (
+            sum + (probability * referenceScores.get(JSON.stringify(result.analysis[index].move)))
+        ), 0)
+    }
+
+    const beforeBoundary = engine.analyzePosition(board, {skill: 354})
+    const afterBoundary = engine.analyzePosition(board, {skill: 355})
+    const beforeScore = expectedReferenceScore(beforeBoundary, 354)
+    const afterScore = expectedReferenceScore(afterBoundary, 355)
+
+    assert.equal(beforeBoundary.depth, 2)
+    assert.equal(afterBoundary.depth, 4)
+    assert.ok(afterBoundary.depthBlend < 0.01)
+    assert.ok(Math.abs(afterScore - beforeScore) < 100, `${beforeScore} -> ${afterScore}`)
+})
+
+test("equal scores stay equal and proven outcomes become more reliable with skill", () => {
+    const harness = createHarness()
+    const analysis = [
+        {move: [0, "☗"], score: 10000},
+        {move: [1, "🗋"], score: 10000},
+        {move: [2, "✂"], score: 20},
+        ...Array.from({length: 16}, (_, index) => ({move: [index % 9, "☗"], score: -10000}))
+    ]
+
+    let previousWinProbability = 0
+    let previousLossProbability = 1
+    let previousExpectedScore = -Infinity
+    for (let skill = 1; skill <= 1000; skill += 1) {
+        const probabilities = Array.from(harness.context.moveSelectionProbabilities(analysis, skill))
+        const winProbability = probabilities[0] + probabilities[1]
+        const lossProbability = probabilities.slice(3).reduce((sum, probability) => sum + probability, 0)
+        const expectedScore = probabilities.reduce((sum, probability, index) => (
+            sum + (probability * analysis[index].score)
+        ), 0)
+
+        assert.ok(Math.abs(probabilities[0] - probabilities[1]) < 1e-12)
+        const normalisedSkill = (skill - 1) / 999
+        const tacticalAccuracy = 1 - Math.pow(1 - normalisedSkill, 3)
+        assert.ok(winProbability + 1e-12 >= tacticalAccuracy)
+        assert.ok(winProbability + 1e-12 >= previousWinProbability)
+        assert.ok(lossProbability <= previousLossProbability + 1e-12)
+        assert.ok(expectedScore + 1e-9 >= previousExpectedScore)
+        previousWinProbability = winProbability
+        previousLossProbability = lossProbability
+        previousExpectedScore = expectedScore
+    }
+
+    const maximumSkill = Array.from(harness.context.moveSelectionProbabilities(analysis, 1000))
+    assert.deepEqual(maximumSkill.slice(0, 3), [0.5, 0.5, 0])
+    assert.ok(maximumSkill.slice(2).every(probability => probability === 0))
+})
+
+test("obvious tactical moves improve on a deliberate skill curve", () => {
+    const harness = createHarness()
+    const analysis = [
+        {move: [0, "☗"], score: 10000},
+        ...Array.from({length: 20}, (_, index) => ({move: [index % 9, "🗋"], score: -10000}))
+    ]
+    const expectedMinimums = new Map([
+        [100, 0.26],
+        [300, 0.65],
+        [500, 0.87],
+        [700, 0.97],
+        [900, 0.998]
+    ])
+
+    for (const [skill, expectedMinimum] of expectedMinimums) {
+        const probabilities = Array.from(harness.context.moveSelectionProbabilities(analysis, skill))
+        assert.ok(probabilities[0] >= expectedMinimum, `skill ${skill}: ${probabilities[0]}`)
+        assert.ok(probabilities[0] < 1)
+    }
+})
+
+test("malformed analysis entries are never selected", () => {
+    const harness = createHarness()
+    const analysis = [
+        {move: [0, "☗"], score: 10},
+        {move: [1, "🗋"], score: NaN},
+        {move: [2, "✂"], score: Infinity},
+        {move: [3, "☗"], score: Symbol("bad")},
+        {move: [4, "🗋"], score: null},
+        {move: [5, "✂"], score: "10000"},
+        {move: [6, "☗"], score: false},
+        {move: [99, "🗋"], score: 20},
+        {move: [7, "unknown"], score: 30}
+    ]
+    const probabilities = Array.from(harness.context.moveSelectionProbabilities(analysis, 1))
+
+    assert.deepEqual(probabilities, [1, 0, 0, 0, 0, 0, 0, 0, 0])
+})
+
 test("a stale worker reply cannot mutate a restarted two-player game", () => {
     const harness = createHarness()
     harness.cells[0].dispatch("click")
@@ -302,6 +483,21 @@ test("worker errors fall back to a legal move instead of locking the turn", () =
     assert.equal(failedWorker.terminated, true)
     assert.equal(harness.cells[0].textContent, "🗋")
     assert.equal(harness.elements.turnTracker.textContent, "X's turn")
+})
+
+test("a maximum-skill fallback takes an available immediate win", () => {
+    const harness = createHarness()
+    harness.elements.botSkill.value = "1000"
+    harness.elements.botSkill.dispatch("input")
+    harness.elements.restartO.dispatch("click")
+    harness.cells[0].textContent = "☗"
+    harness.cells[1].textContent = "☗"
+    harness.runTimers(0)
+
+    harness.workers.at(-1).fail()
+
+    assert.equal(harness.cells[2].textContent, "☗")
+    assert.equal(harness.elements.turnTracker.textContent, "O wins!")
 })
 
 test("a wedged worker is replaced after the watchdog deadline", () => {
