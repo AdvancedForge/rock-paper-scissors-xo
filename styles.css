@@ -8,6 +8,14 @@ body{
     font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
 }
 
+.landingPage{
+    box-sizing: border-box;
+    min-height: 100vh;
+    min-height: 100svh;
+    margin: 0;
+    padding: 2rem;
+}
+
 h1 {
     font-size: 5rem;
     margin: 0 0 2rem;
@@ -65,17 +73,125 @@ button{
 }
 
 .landingDiv{
-    width: 70%;
+    width: min(58rem, 100%);
+    align-items: stretch;
     justify-content: space-between;
 }
 
 .statsDiv{
-    min-width: 25rem;
+    box-sizing: border-box;
+    width: min(25rem, 100%);
+    min-width: 0;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: center;
+    align-items: stretch;
+    justify-content: flex-start;
     border: 2px solid #ccc;
+    padding: 1.25rem 1.5rem;
+}
+
+.statsDiv h2{
+    margin: 0 0 1rem;
+}
+
+.statsEmpty{
+    color: #aaa;
+    line-height: 1.5;
+    margin: 0;
+}
+
+.favoriteStat{
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    min-height: 3rem;
+    padding-bottom: 1rem;
+}
+
+.favoriteStat > div{
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.favoritePieceSymbol{
+    width: 3rem;
+    font-size: 2.5rem;
+    line-height: 1;
+    text-align: center;
+}
+
+.favoritePieceSymbol.multiplePieces{
+    width: auto;
+    font-size: 1.35rem;
+}
+
+.statLabel,
+.dataNote{
+    color: #aaa;
+    font-size: 0.85rem;
+}
+
+.pieceCounts{
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.pieceCounts li,
+.statRows > div{
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    border-top: 1px solid #444;
+    padding: 0.55rem 0;
+}
+
+.pieceCounts output,
+.statRows dd{
+    margin: 0;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.statRows{
+    margin: 0;
+}
+
+.trainingDetails{
+    border-top: 2px solid #ccc;
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+}
+
+.trainingDetails summary{
+    cursor: pointer;
+    font-weight: 700;
+}
+
+.trainingDetails p{
+    line-height: 1.4;
+}
+
+.statsActions{
+    display: flex;
+    gap: 0.5rem;
+}
+
+.statsActions button{
+    cursor: pointer;
+}
+
+.statsActions button:disabled{
+    cursor: default;
+    opacity: 0.5;
+}
+
+.statsActionStatus{
+    min-height: 1.4em;
+    margin-bottom: 0;
+    color: #aaa;
+    font-size: 0.85rem;
 }
 
 .landingCard{
@@ -104,4 +220,27 @@ button{
 
 .cardContent p {
     margin-top: 0.5rem;
+}
+
+@media (max-width: 800px){
+    .landingPage{
+        justify-content: flex-start;
+        padding: 1.25rem;
+    }
+
+    .bigspace{
+        margin-bottom: 2rem;
+    }
+
+    .landingDiv{
+        flex-direction: column;
+    }
+
+    .landingCards,
+    .landingCard,
+    .statsDiv{
+        box-sizing: border-box;
+        width: 100%;
+        min-width: 0;
+    }
 }

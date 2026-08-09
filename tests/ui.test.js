@@ -5,6 +5,7 @@ const test = require("node:test")
 const vm = require("node:vm")
 
 const engine = require("../rockfish")
+const playerDataSource = readFileSync(path.join(__dirname, "..", "playerdata.js"), "utf8")
 const uiSource = readFileSync(path.join(__dirname, "..", "rpsxo.js"), "utf8")
 const UNIQUE_MOVE_SHAPES = Array.from({length: 9}, (_, cell) => (
     ["☗", "🗋", "✂"].map(piece => [cell, piece])
@@ -17,7 +18,7 @@ test("every HTML entry point declares UTF-8 before page content", () => {
     }
 
     const playground = readFileSync(path.join(__dirname, "..", "playground.html"), "utf8")
-    assert.match(playground, /<script src="rockfish\.js"><\/script>\s*<script src="rpsxo\.js"><\/script>/)
+    assert.match(playground, /<script src="playerdata\.js"><\/script>\s*<script src="rockfish\.js"><\/script>\s*<script src="rpsxo\.js"><\/script>/)
 })
 
 class FakeClassList {
@@ -126,6 +127,7 @@ function createHarness(randomValue = 0, options = {}) {
     }
 
     const savedUsers = []
+    const storedValues = new Map()
     const consoleErrors = []
     const context = {
         Array,
@@ -136,8 +138,13 @@ function createHarness(randomValue = 0, options = {}) {
             getElementById: id => elements[id] ?? null
         },
         localforage: {
-            getItem: async () => null,
-            setItem: async (_key, value) => { savedUsers.push({...value}) }
+            getItem: async key => storedValues.has(key) ? storedValues.get(key) : null,
+            setItem: async (key, value) => {
+                storedValues.set(key, value)
+                savedUsers.push({...value})
+            },
+            removeItem: async key => { storedValues.delete(key) },
+            keys: async () => [...storedValues.keys()]
         },
         Math: Object.create(Math),
         location: {protocol: options.protocol ?? "https:"},
@@ -146,12 +153,146 @@ function createHarness(randomValue = 0, options = {}) {
         Worker: FakeWorker
     }
     if (options.Rockfish) context.Rockfish = options.Rockfish
+    if (options.playerData) context.RpsxoPlayerData = options.playerData
+    if (options.loadPlayerData) context.window = context
     context.Math.random = () => randomValue
     vm.createContext(context)
+    if (options.loadPlayerData) vm.runInContext(playerDataSource, context)
     vm.runInContext(uiSource, context)
 
-    return {cells, consoleErrors, context, elements, runTimers, savedUsers, timers, workers}
+    return {
+        cells, consoleErrors, context, elements, runTimers, savedUsers,
+        storedValues, timers, workers
+    }
 }
+
+function createPlayerDataSpy() {
+    const calls = []
+    const api = {}
+    for (const method of ["ready", "recordMove", "finishGame", "abandonGame"]) {
+        api[method] = payload => { calls.push({method, payload}) }
+    }
+    return {api, calls}
+}
+
+test("accepted single-player moves feed a human example and an AI context move", () => {
+    const playerData = createPlayerDataSpy()
+    const harness = createHarness(0, {playerData: playerData.api})
+    assert.equal(playerData.calls[0].method, "ready")
+
+    harness.cells[0].dispatch("click")
+    const humanCall = playerData.calls.find(call => call.method === "recordMove")
+    assert.deepEqual(Array.from(humanCall.payload.boardBefore), Array(9).fill(""))
+    assert.equal(humanCall.payload.actor, "human")
+    assert.equal(humanCall.payload.turn, "X")
+    assert.equal(humanCall.payload.cell, 0)
+    assert.equal(humanCall.payload.piece, "☗")
+
+    harness.runTimers(0)
+    const worker = harness.workers[0]
+    worker.deliver({
+        requestId: worker.messages[0].requestId,
+        analysis: [{move: [4, "🗋"], score: 10}]
+    })
+
+    const moveCalls = playerData.calls.filter(call => call.method === "recordMove")
+    assert.equal(moveCalls.length, 2)
+    assert.equal(moveCalls[1].payload.actor, "rockfish")
+    assert.equal(moveCalls[1].payload.source, "worker")
+    assert.equal(moveCalls[1].payload.boardBefore[0], "☗")
+})
+
+test("the real browser data module receives the UI timeline end to end", async () => {
+    const harness = createHarness(0, {loadPlayerData: true})
+    harness.cells[0].dispatch("click")
+    harness.runTimers(0)
+    const worker = harness.workers[0]
+    worker.deliver({
+        requestId: worker.messages[0].requestId,
+        analysis: [{move: [4, "🗋"], score: 10}]
+    })
+
+    const exported = await harness.context.RpsxoPlayerData.exportData()
+    assert.equal(exported.games.length, 1)
+    assert.deepEqual(Array.from(exported.games[0].moves, move => move.actor), [
+        "human", "rockfish"
+    ])
+    assert.equal(exported.decisions.length, 1)
+    assert.equal(exported.decisions[0].inputs.boardBefore, 0)
+    assert.equal(exported.decisions[0].target.chosenAction, 0)
+})
+
+test("an O-first game records Rockfish's opening as timeline context", () => {
+    const playerData = createPlayerDataSpy()
+    const harness = createHarness(0, {playerData: playerData.api})
+
+    harness.elements.restartO.dispatch("click")
+    harness.runTimers(0)
+    const worker = harness.workers.at(-1)
+    worker.deliver({
+        requestId: worker.messages[0].requestId,
+        analysis: [{move: [4, "🗋"], score: 10}]
+    })
+
+    const moveCall = playerData.calls.find(call => call.method === "recordMove")
+    assert.equal(moveCall.payload.actor, "rockfish")
+    assert.equal(moveCall.payload.starter, "O")
+    assert.equal(moveCall.payload.turn, "O")
+    assert.deepEqual(Array.from(moveCall.payload.boardBefore), Array(9).fill(""))
+})
+
+test("an AI move keeps the skill captured when its request started", () => {
+    const playerData = createPlayerDataSpy()
+    const harness = createHarness(0, {playerData: playerData.api})
+
+    harness.cells[0].dispatch("click")
+    harness.runTimers(0)
+    const worker = harness.workers[0]
+    const request = worker.messages[0]
+    harness.elements.botSkill.value = "900"
+    harness.elements.botSkill.dispatch("input")
+    worker.deliver({
+        requestId: request.requestId,
+        analysis: [{move: [4, "🗋"], score: 10}]
+    })
+
+    const aiMove = playerData.calls.filter(call => call.method === "recordMove").at(-1)
+    assert.equal(aiMove.payload.actor, "rockfish")
+    assert.equal(aiMove.payload.botSkill, 300)
+})
+
+test("illegal and local-player clicks do not feed personal player data", () => {
+    const playerData = createPlayerDataSpy()
+    const harness = createHarness(0, {playerData: playerData.api})
+
+    harness.elements.twoplayer.dispatch("click")
+    harness.cells[0].dispatch("click")
+    harness.cells[0].dispatch("click")
+
+    assert.equal(playerData.calls.some(call => call.method === "recordMove"), false)
+})
+
+test("a winning move is recorded before its result is finalized", () => {
+    const playerData = createPlayerDataSpy()
+    const harness = createHarness(0, {playerData: playerData.api})
+
+    // Use direct accepted moves so the fixture remains single-player while
+    // exercising the shared commit path for both sides.
+    harness.context.playMove(harness.cells[0], "☗", {actor: "human", source: "click"})
+    harness.context.playMove(harness.cells[3], "☗", {actor: "rockfish", source: "worker"})
+    harness.context.playMove(harness.cells[1], "☗", {actor: "human", source: "click"})
+    harness.context.playMove(harness.cells[4], "☗", {actor: "rockfish", source: "worker"})
+    harness.context.playMove(harness.cells[2], "☗", {actor: "human", source: "click"})
+
+    const relevantCalls = playerData.calls.filter(call => (
+        call.method === "recordMove" || call.method === "finishGame"
+    ))
+    assert.equal(relevantCalls.at(-2).method, "recordMove")
+    assert.equal(relevantCalls.at(-2).payload.cell, 2)
+    assert.equal(relevantCalls.at(-1).method, "finishGame")
+    assert.equal(relevantCalls.at(-1).payload.winner, "X")
+    assert.deepEqual(Array.from(relevantCalls.at(-1).payload.winningLine), [0, 1, 2])
+})
 
 test("the displayed default skill is the skill sent to Rockfish", () => {
     const harness = createHarness()

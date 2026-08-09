@@ -5,13 +5,13 @@
         <title>rpsxo</title>
         <link rel="stylesheet" href="styles.css">
     </head>
-    <body>
+    <body class="landingPage">
         <h1 class="bigspace">rpsxo</h1>
         <div class="horizDiv landingDiv">
             <div class="landingCards">
                 <a href="tutorial.html">
                     <div class="horizDiv landingCard">
-                        <h1 class="cardIcon">🛈</h1>
+                        <h1 class="cardIcon">&#x1F6C8;</h1>
                         <div class="cardContent">
                             <h2>Tutorial</h2>
                             <p>Learn the rules of rpsxo!</p>
@@ -20,7 +20,7 @@
                 </a>
                 <a href="playground.html">
                     <div class="horizDiv landingCard">
-                        <h1 class="cardIcon">⚙</h1>
+                        <h1 class="cardIcon">&#x2699;</h1>
                         <div class="cardContent">
                             <h2>Casual Play</h2>
                             <p>Play around with AIs of different skill, <br> or try your own strategies.</p>
@@ -28,20 +28,43 @@
                     </div>
                 </a>
             </div>
-            <div class="statsDiv">
-                <h2>Your Stats</h2>
-                <div class="horizDiv">
-                    <p>Favorite Piece: </p>
-                    <h4 id="favPiece"></h4>
+            <section class="statsDiv" aria-labelledby="statsTitle">
+                <h2 id="statsTitle">Your Stats</h2>
+                <p id="statsEmpty" class="statsEmpty">Play Rockfish and your habits will show up here.</p>
+                <div id="statsContent" hidden>
+                    <div class="favoriteStat">
+                        <span id="favPieceSymbol" class="favoritePieceSymbol" aria-hidden="true"></span>
+                        <div>
+                            <span class="statLabel">Favorite piece</span>
+                            <strong id="favPiece">No favorite yet</strong>
+                        </div>
+                    </div>
+                    <ul class="pieceCounts" aria-label="Piece use">
+                        <li><span>&#x2617; Rock</span><output id="rockUses">0</output></li>
+                        <li><span>&#x1F5CB; Paper</span><output id="paperUses">0</output></li>
+                        <li><span>&#x2702; Scissors</span><output id="scissorUses">0</output></li>
+                    </ul>
+                    <dl class="statRows">
+                        <div><dt>Favorite square</dt><dd id="favoriteSquare">&mdash;</dd></div>
+                        <div><dt>Usual opening</dt><dd id="favoriteOpening">&mdash;</dd></div>
+                        <div><dt>Replacement moves</dt><dd id="replacementRate">&mdash;</dd></div>
+                        <div><dt>Games finished</dt><dd id="finishedGames">0</dd></div>
+                    </dl>
                 </div>
-                <div class="horizDiv">
-                    <p id="rockUses"></p>
-                    <p id="paperUses"></p>
-                    <p id="scissorUses"></p>
-                </div>
-            </div>
+                <details class="trainingDetails">
+                    <summary>Training data</summary>
+                    <p id="datasetSummary">0 moves remembered</p>
+                    <p id="datasetNote" class="dataNote">Saved only in this browser. No model is training yet.</p>
+                    <div class="statsActions">
+                        <button id="exportData" type="button">Export</button>
+                        <button id="resetLearning" type="button">Reset</button>
+                    </div>
+                    <p id="statsActionStatus" class="statsActionStatus" role="status" aria-live="polite"></p>
+                </details>
+            </section>
         </div>
         <script src="https://cdn.jsdelivr.net/npm/localforage@1.10.0/dist/localforage.min.js"></script>
+        <script src="playerdata.js"></script>
         <script src="statsloader.js"></script>
     </body>
 </html>
