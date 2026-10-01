@@ -4,9 +4,17 @@
  * This module records complete single-player timelines for context and creates
  * training examples only from accepted human moves. Nothing is uploaded and
  * nothing in this file trains or changes a model.
+ *
+ * Rules vocabulary (pieces, win lines, board codec) comes from rules.js. This
+ * module only adds the pieces that are specific to recorded training data:
+ * the dense 27-way action space and the stored profile/journal schema.
  */
 (function initialisePlayerData(globalScope) {
     "use strict"
+
+    const rules = (globalScope && globalScope.RpsxoRules) ||
+        (typeof require === "function" ? require("./rules") : null)
+    if (!rules) throw new Error("RPSXO requires rules.js to load first")
 
     const DATA_SCHEMA_VERSION = 1
     const FEATURE_SCHEMA_VERSION = 1
@@ -22,20 +30,19 @@
     const MAX_GAME_PLIES = 256
     const HISTORY_LENGTH = 16
     const ACTIVE_GAME_STALE_MS = 12 * 60 * 60 * 1000
+    const MAX_ACTION_ID = 26
+    const STATE_COUNT = 1 << 18
 
-    // ASCII escapes keep the page/worker/storage contract independent of the
-    // charset used by a host serving these classic scripts.
-    const ROCK = "\u2617"
-    const PAPER = "\uD83D\uDDCB"
-    const SCISSORS = "\u2702"
-    const PIECES = ["", ROCK, PAPER, SCISSORS]
-    const PIECE_NAMES = ["", "rock", "paper", "scissors"]
-    const PIECE_CODES = {[ROCK]: 1, [PAPER]: 2, [SCISSORS]: 3}
-    const WIN_LINES = [
-        [0, 1, 2], [3, 4, 5], [6, 7, 8],
-        [0, 3, 6], [1, 4, 7], [2, 5, 8],
-        [0, 4, 8], [2, 4, 6]
-    ]
+    const PIECES = rules.PIECES
+    const PIECE_NAMES = rules.PIECE_NAMES
+
+    const pieceCode = rules.pieceCode
+    const codeAt = rules.codeAt
+    const encodeBoard = rules.encodeBoard
+    const decodeBoard = rules.decodeBoard
+    const replacingCode = rules.replacingCode
+    const clampSkill = rules.clampSkill
+    const winningLine = rules.winningLine
 
     function deepClone(value) {
         if (value === undefined) return undefined
@@ -55,45 +62,8 @@
             : fallback
     }
 
-    function clampSkill(value) {
-        const numericValue = Number(value)
-        if (!Number.isFinite(numericValue)) return 300
-        return Math.min(1000, Math.max(1, Math.round(numericValue)))
-    }
-
-    function pieceCode(piece) {
-        if (Number.isInteger(piece) && piece >= 1 && piece <= 3) return piece
-        return PIECE_CODES[piece] || 0
-    }
-
-    function encodeBoard(board) {
-        if (!Array.isArray(board) || board.length !== 9) {
-            throw new Error("A RPSXO board must contain exactly 9 cells")
-        }
-
-        let state = 0
-        board.forEach((piece, cell) => {
-            let code = 0
-            if (piece !== "" && piece !== null && piece !== undefined && piece !== 0) {
-                code = pieceCode(piece)
-                if (!code) throw new Error("Unknown RPSXO piece")
-            }
-            state |= code << (cell * 2)
-        })
-        return state
-    }
-
-    function decodeBoard(state) {
-        if (!Number.isInteger(state) || state < 0 || state >= (1 << 18)) {
-            throw new Error("Invalid encoded RPSXO board")
-        }
-        return Array.from({length: 9}, (_, cell) => PIECES[(state >> (cell * 2)) & 3])
-    }
-
-    function codeAt(state, cell) {
-        return (state >> (cell * 2)) & 3
-    }
-
+    // Actions are a dense (cell, piece) space over all 9 cells so a policy can
+    // be trained over a fixed 27-way output regardless of which cells are open.
     function encodeAction(cell, piece) {
         const code = pieceCode(piece)
         if (!Number.isInteger(cell) || cell < 0 || cell > 8 || !code) {
@@ -103,31 +73,27 @@
     }
 
     function decodeAction(actionId) {
-        if (!Number.isInteger(actionId) || actionId < 0 || actionId > 26) {
+        if (!Number.isInteger(actionId) || actionId < 0 || actionId > MAX_ACTION_ID) {
             throw new Error("Invalid RPSXO action id")
         }
         return [Math.floor(actionId / 3), PIECES[(actionId % 3) + 1]]
     }
 
-    function nextPieceCode(code) {
-        return code === 3 ? 1 : code + 1
-    }
-
     function isLegalAction(state, actionId) {
-        if (!Number.isInteger(state) || state < 0 || state >= (1 << 18) ||
-            !Number.isInteger(actionId) || actionId < 0 || actionId > 26) {
+        if (!Number.isInteger(state) || state < 0 || state >= STATE_COUNT ||
+            !Number.isInteger(actionId) || actionId < 0 || actionId > MAX_ACTION_ID) {
             return false
         }
         const cell = Math.floor(actionId / 3)
         const code = (actionId % 3) + 1
         const occupied = codeAt(state, cell)
-        return occupied === 0 || code === nextPieceCode(occupied)
+        return occupied === 0 || code === replacingCode(occupied)
     }
 
     function legalActionMask(boardOrState) {
         const state = Array.isArray(boardOrState) ? encodeBoard(boardOrState) : boardOrState
         let mask = 0
-        for (let actionId = 0; actionId < 27; actionId += 1) {
+        for (let actionId = 0; actionId <= MAX_ACTION_ID; actionId += 1) {
             if (isLegalAction(state, actionId)) mask |= 1 << actionId
         }
         return mask >>> 0
@@ -149,14 +115,6 @@
         const code = (actionId % 3) + 1
         const shift = cell * 2
         return (state & ~(3 << shift)) | (code << shift)
-    }
-
-    function winningLine(state) {
-        return WIN_LINES.find(line => {
-            const code = codeAt(state, line[0])
-            return code !== 0 && codeAt(state, line[1]) === code &&
-                codeAt(state, line[2]) === code
-        }) || null
     }
 
     function createMemoryStorage(seed = {}) {

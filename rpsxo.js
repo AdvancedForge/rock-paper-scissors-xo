@@ -1,3 +1,26 @@
+/*
+ * RPSXO board shell.
+ *
+ * Owns the DOM board, turn order, mode switching and the bridge to the
+ * Rockfish engine. Game vocabulary comes from rules.js and move selection from
+ * policy.js, so this file is only concerned with driving a game.
+ */
+const rules = (typeof globalThis !== "undefined" && globalThis.RpsxoRules) || null
+const policy = (typeof globalThis !== "undefined" && globalThis.RpsxoPolicy) || null
+
+const ROCK = rules.ROCK
+const PAPER = rules.PAPER
+const SCISSORS = rules.SCISSORS
+const moves = rules.MOVES
+const beatsDict = rules.BEATS
+const boardHasWin = rules.boardHasWin
+const winningLine = rules.winningLine
+const skillBasedMovePick = policy.skillBasedMovePick
+const normaliseSkill = rules.normaliseSkill
+
+const AI_THINKING_TEXT = "O is thinking\u2026"
+const AI_WATCHDOG_MS = 2000
+
 const cells = document.querySelectorAll(".cell")
 const restartXBtn = document.getElementById("restartX")
 const restartOBtn = document.getElementById("restartO")
@@ -10,33 +33,15 @@ const twoplayerBtn = document.getElementById("twoplayer")
 const botSkillBar = document.getElementById("botSkill")
 const botSkillDisplay = document.getElementById("botSkillP")
 
-// Keep source files ASCII-only so a host with a bad charset cannot corrupt the
-// values shared by the page and the worker.
-const ROCK = "\u2617"
-const PAPER = "\uD83D\uDDCB"
-const SCISSORS = "\u2702"
-const winLines = [
-    [0, 1, 2],
-    [3, 4, 5],
-    [6, 7, 8],
-    [0, 3, 6],
-    [1, 4, 7],
-    [2, 5, 8],
-    [0, 4, 8],
-    [2, 4, 6]
-]
-const moves = [ROCK, PAPER, SCISSORS]
-const beatsDict = {[ROCK]: SCISSORS, [PAPER]: ROCK, [SCISSORS]: PAPER}
-const PROVEN_SCORE = 9000
-const HEURISTIC_SCORE_PER_RANK = 40
-const MAX_HEURISTIC_GAP_RANKS = 4
-const useInlineRockfish = typeof location !== "undefined" && location.protocol === "file:"
+const playerData = typeof globalThis !== "undefined"
+    ? globalThis.RpsxoPlayerData
+    : null
 
 let gamemode = "singleplayer"
 let turn = "X"
 let gameOver = false
 let selectedMove = ROCK
-let botSkill = Number(botSkillBar?.value ?? 300)
+let botSkill = Number(botSkillBar?.value ?? rules.DEFAULT_SKILL)
 let rockfish = null
 let pendingAiRequest = null
 let aiRequestSequence = 0
@@ -44,9 +49,9 @@ let aiMoveTimer = null
 let aiWatchdogTimer = null
 let gameStartingTurn = "X"
 
-const playerData = typeof globalThis !== "undefined"
-    ? globalThis.RpsxoPlayerData
-    : null
+// Chromium does not allow a file:// page to load an external Worker, so a copy
+// opened from disk runs the same engine in-page instead.
+const useInlineRockfish = typeof location !== "undefined" && location.protocol === "file:"
 
 function callPlayerData(method, payload) {
     if (!playerData || typeof playerData[method] !== "function") return
@@ -91,6 +96,11 @@ function createRockfishWorker() {
     }
 }
 
+function resetRockfishWorker() {
+    if (rockfish) rockfish.terminate()
+    rockfish = createRockfishWorker()
+}
+
 function cancelAiSearch() {
     if (aiMoveTimer !== null) {
         clearTimeout(aiMoveTimer)
@@ -102,8 +112,7 @@ function cancelAiSearch() {
     }
     pendingAiRequest = null
     aiRequestSequence += 1
-    if (rockfish) rockfish.terminate()
-    rockfish = createRockfishWorker()
+    resetRockfishWorker()
 }
 
 function scheduleAiMove() {
@@ -112,6 +121,10 @@ function scheduleAiMove() {
         aiMoveTimer = null
         aiMove()
     }, 0)
+}
+
+function isAiTurn() {
+    return gamemode === "singleplayer" && turn === "O" && !gameOver
 }
 
 function handleRockfishMessage(event, sourceWorker) {
@@ -126,7 +139,7 @@ function handleRockfishMessage(event, sourceWorker) {
         return playFallbackAiMove()
     }
     if (data.requestId !== request.id) return
-    if (gamemode !== "singleplayer" || turn !== "O" || gameOver || boardKey() !== request.boardKey) {
+    if (!isAiTurn() || boardKey() !== request.boardKey) {
         pendingAiRequest = null
         clearAiWatchdog()
         return
@@ -148,10 +161,9 @@ function handleRockfishMessage(event, sourceWorker) {
     if (!chosenMove || !Array.isArray(chosenMove.move)) return playFallbackAiMove()
 
     const [cellIndex, piece] = chosenMove.move
-    const source = sourceWorker ? "worker" : "inline"
     if (!playMove(cells[cellIndex], piece, {
         actor: "rockfish",
-        source,
+        source: sourceWorker ? "worker" : "inline",
         botSkill: request.skill
     })) {
         playFallbackAiMove()
@@ -166,8 +178,7 @@ function handleRockfishError(event, sourceWorker) {
     console.error("Rockfish worker failed", event)
     pendingAiRequest = null
     clearAiWatchdog()
-    if (rockfish) rockfish.terminate()
-    rockfish = createRockfishWorker()
+    resetRockfishWorker()
     playFallbackAiMove()
 }
 
@@ -184,18 +195,16 @@ function startAiWatchdog(requestId) {
         if (!pendingAiRequest || pendingAiRequest.id !== requestId) return
         console.error("Rockfish search timed out")
         pendingAiRequest = null
-        if (rockfish) rockfish.terminate()
-        rockfish = createRockfishWorker()
+        resetRockfishWorker()
         playFallbackAiMove()
-    }, 2000)
+    }, AI_WATCHDOG_MS)
 }
 
 function cellClicked(event) {
     if (gameOver || (turn === "O" && gamemode === "singleplayer")) return
 
-    const playedPiece = selectedMove
     const actor = gamemode === "singleplayer" ? "human" : `local_${turn.toLowerCase()}`
-    playMove(event.currentTarget, playedPiece, {actor, source: "click"})
+    playMove(event.currentTarget, selectedMove, {actor, source: "click"})
 }
 
 function playMove(cell, piece = selectedMove, moveContext = {}) {
@@ -223,40 +232,24 @@ function playMove(cell, piece = selectedMove, moveContext = {}) {
     }
 
     cell.textContent = piece
-    const boardAfter = boardArray()
-    const winningLine = findWinningLine(boardAfter)
-    if (winningLine) {
+    const win = winningLine(boardArray())
+    if (win) {
         endGame({
             winner: turn,
             winningPiece: piece,
-            winningLine
+            winningLine: win
         })
         return true
     }
 
     turn = turn === "X" ? "O" : "X"
     if (turn === "O" && gamemode === "singleplayer") {
-        turnTracker.textContent = "O is thinking\u2026"
+        turnTracker.textContent = AI_THINKING_TEXT
         scheduleAiMove()
     } else {
         turnTracker.textContent = `${turn}'s turn`
     }
     return true
-}
-
-function findWin() {
-    return boardHasWin(boardArray())
-}
-
-function boardHasWin(board) {
-    return Boolean(findWinningLine(board))
-}
-
-function findWinningLine(board) {
-    return winLines.find(line => {
-        const firstPiece = board[line[0]]
-        return firstPiece && firstPiece === board[line[1]] && firstPiece === board[line[2]]
-    })
 }
 
 function endGame(result) {
@@ -275,7 +268,7 @@ function restart(start, reason = "restart") {
     gameStartingTurn = start
     turnTracker.textContent = `${start}'s turn`
     if (turn === "O" && gamemode === "singleplayer") {
-        turnTracker.textContent = "O is thinking\u2026"
+        turnTracker.textContent = AI_THINKING_TEXT
         scheduleAiMove()
     }
 }
@@ -284,7 +277,7 @@ function legalAiMoves(board) {
     const outcomes = []
     board.forEach((piece, cellIndex) => {
         if (piece) {
-            outcomes.push([cellIndex, beatsDict[beatsDict[piece]]])
+            outcomes.push([cellIndex, rules.replacingPiece(piece)])
         } else {
             moves.forEach(move => outcomes.push([cellIndex, move]))
         }
@@ -292,8 +285,11 @@ function legalAiMoves(board) {
     return outcomes
 }
 
+// Used only when Rockfish cannot answer at all. Looks one reply deep for a
+// proven win or a proven loss so the turn is never locked and a weak
+// replacement still finishes the game legally.
 function playFallbackAiMove() {
-    if (gamemode !== "singleplayer" || turn !== "O" || gameOver) return
+    if (!isAiTurn()) return
     const board = boardArray()
     const analysis = legalAiMoves(board).map(move => {
         const [cellIndex, piece] = move
@@ -302,13 +298,13 @@ function playFallbackAiMove() {
 
         let score = 0
         if (boardHasWin(nextBoard)) {
-            score = PROVEN_SCORE
+            score = policy.PROVEN_SCORE
         } else if (legalAiMoves(nextBoard).some(reply => {
             const replyBoard = [...nextBoard]
             replyBoard[reply[0]] = reply[1]
             return boardHasWin(replyBoard)
         })) {
-            score = -PROVEN_SCORE
+            score = -policy.PROVEN_SCORE
         }
         return {move, score}
     })
@@ -340,8 +336,7 @@ function runInlineRockfish(board, request) {
 }
 
 function aiMove() {
-    if (gamemode !== "singleplayer" || turn !== "O" || gameOver) return
-    if (pendingAiRequest) return
+    if (!isAiTurn() || pendingAiRequest) return
 
     const board = boardArray()
     const inlineEngine = useInlineRockfish ? inlineRockfishEngine() : null
@@ -367,187 +362,6 @@ function aiMove() {
     } catch (error) {
         handleRockfishError(error, rockfish)
     }
-}
-
-function normalisedBotSkill(skill) {
-    const numericSkill = Math.min(1000, Math.max(1, Number(skill) || 1))
-    return (numericSkill - 1) / 999
-}
-
-function outcomeBand(score) {
-    if (score >= PROVEN_SCORE) return 1
-    if (score <= -PROVEN_SCORE) return -1
-    return 0
-}
-
-function analyzedMoveScore(move) {
-    return typeof move?.score === "number" && Number.isFinite(move.score)
-        ? move.score
-        : null
-}
-
-function isAnalyzedMoveCandidate(move) {
-    return Array.isArray(move?.move) &&
-        Number.isInteger(move.move[0]) && move.move[0] >= 0 && move.move[0] < cells.length &&
-        moves.includes(move.move[1]) && analyzedMoveScore(move) !== null
-}
-
-function rankedAnalyzedMoves(analyzedMoves) {
-    if (!Array.isArray(analyzedMoves) || analyzedMoves.length === 0) return []
-
-    const seenMoveKeys = new Set()
-    return analyzedMoves.map((move, index) => (
-        {index, move, score: analyzedMoveScore(move)}
-    )).filter(candidate => isAnalyzedMoveCandidate(candidate.move))
-        .sort((first, second) => second.score - first.score || first.index - second.index)
-        .filter(candidate => {
-            const key = analyzedMoveKey(candidate.move)
-            if (seenMoveKeys.has(key)) return false
-            seenMoveKeys.add(key)
-            return true
-        })
-}
-
-function rankedMoveProbabilities(analyzedMoves, skill) {
-    if (!Array.isArray(analyzedMoves) || analyzedMoves.length === 0) return []
-
-    const normalisedSkill = normalisedBotSkill(skill)
-    const continuation = Math.cbrt(1 - normalisedSkill)
-    const rankedMoves = rankedAnalyzedMoves(analyzedMoves)
-    if (rankedMoves.length === 0) return []
-
-    // A geometric distribution gives every rank some probability below skill
-    // 1000. Exact score ties share the mass of all ranks occupied by that tie,
-    // so symmetric moves remain equally likely without their count swamping a
-    // better or worse score group.
-    const weights = Array(analyzedMoves.length).fill(0)
-    let rank = 0
-    let previousGroupScore = null
-    for (let groupStart = 0; groupStart < rankedMoves.length;) {
-        let groupEnd = groupStart + 1
-        while (groupEnd < rankedMoves.length &&
-            rankedMoves[groupEnd].score === rankedMoves[groupStart].score) {
-            groupEnd += 1
-        }
-
-        const groupSize = groupEnd - groupStart
-        const groupScore = rankedMoves[groupStart].score
-        if (previousGroupScore !== null &&
-            outcomeBand(previousGroupScore) === 0 && outcomeBand(groupScore) === 0) {
-            const heuristicGapRanks = Math.min(
-                MAX_HEURISTIC_GAP_RANKS,
-                Math.floor((previousGroupScore - groupScore) / HEURISTIC_SCORE_PER_RANK)
-            )
-            rank += Math.max(0, heuristicGapRanks)
-        }
-
-        let groupWeight = 0
-        for (let offset = 0; offset < groupSize; offset += 1) {
-            groupWeight += Math.pow(continuation, rank + offset)
-        }
-        for (let index = groupStart; index < groupEnd; index += 1) {
-            weights[rankedMoves[index].index] = groupWeight / groupSize
-        }
-        rank += groupSize
-        previousGroupScore = groupScore
-        groupStart = groupEnd
-    }
-
-    // Search scores have three qualitatively different bands: a proven win,
-    // an unresolved heuristic value, and a proven loss. As skill rises, ensure
-    // Rockfish increasingly chooses from the best available outcome band while
-    // retaining ranked variety inside that band.
-    const bestOutcomeBand = outcomeBand(rankedMoves[0].score)
-    const bestBandMoves = rankedMoves.filter(candidate => outcomeBand(candidate.score) === bestOutcomeBand)
-    const bestBandIndexes = new Set(bestBandMoves.map(candidate => candidate.index))
-    const bestBandWeight = bestBandMoves.reduce((sum, candidate) => (
-        sum + weights[candidate.index]
-    ), 0)
-    const otherBandWeight = rankedMoves.reduce((sum, candidate) => (
-        bestBandIndexes.has(candidate.index) ? sum : sum + weights[candidate.index]
-    ), 0)
-
-    // Skill controls how much Rockfish insists on the best known outcome band.
-    // The remaining mass respects how many legal alternatives exist: one safe
-    // move among twenty losing moves is therefore easier to miss than one safe
-    // move among two. Skill 1 stays uniform and skill 1000 stays exact.
-    const uniformBestBandShare = bestBandMoves.length / rankedMoves.length
-    const targetOtherBandProbability = (1 - uniformBestBandShare) * (1 - normalisedSkill)
-    const targetBestBandProbability = 1 - targetOtherBandProbability
-    const probabilities = weights.map((weight, index) => {
-        if (bestBandIndexes.has(index)) {
-            return bestBandWeight > 0
-                ? targetBestBandProbability * (weight / bestBandWeight)
-                : 0
-        }
-        return otherBandWeight > 0
-            ? targetOtherBandProbability * (weight / otherBandWeight)
-            : 0
-    })
-
-    const totalProbability = probabilities.reduce((sum, probability) => sum + probability, 0)
-    return totalProbability > 0
-        ? probabilities.map(probability => probability / totalProbability)
-        : probabilities
-}
-
-function analyzedMoveKey(move) {
-    return Array.isArray(move?.move) ? `${move.move[0]}|${move.move[1]}` : null
-}
-
-function moveSelectionProbabilities(analyzedMoves, skill, previousAnalysis = null, depthBlend = 1) {
-    const currentProbabilities = rankedMoveProbabilities(analyzedMoves, skill)
-    const blend = typeof depthBlend === "number" && Number.isFinite(depthBlend)
-        ? Math.min(1, Math.max(0, depthBlend))
-        : 1
-    if (!Array.isArray(previousAnalysis) || previousAnalysis.length === 0 ||
-        blend >= 1) {
-        return currentProbabilities
-    }
-
-    const previousProbabilities = rankedMoveProbabilities(previousAnalysis, skill)
-    const canonicalCurrentIndexes = new Set(
-        rankedAnalyzedMoves(analyzedMoves).map(candidate => candidate.index)
-    )
-    const previousByMove = new Map()
-    previousAnalysis.forEach((move, index) => {
-        const key = analyzedMoveKey(move)
-        const probability = previousProbabilities[index]
-        if (key !== null && probability > 0) {
-            previousByMove.set(key, (previousByMove.get(key) || 0) + probability)
-        }
-    })
-
-    const blended = currentProbabilities.map((probability, index) => {
-        if (!canonicalCurrentIndexes.has(index)) return 0
-        const previousProbability = previousByMove.get(analyzedMoveKey(analyzedMoves[index])) || 0
-        return (blend * probability) + ((1 - blend) * previousProbability)
-    })
-    const totalProbability = blended.reduce((sum, probability) => sum + probability, 0)
-    return totalProbability > 0
-        ? blended.map(probability => probability / totalProbability)
-        : currentProbabilities
-}
-
-function skillBasedMovePick(analyzedMoves, skill, previousAnalysis = null, depthBlend = 1) {
-    const probabilities = moveSelectionProbabilities(
-        analyzedMoves,
-        skill,
-        previousAnalysis,
-        depthBlend
-    )
-    if (probabilities.length === 0) return null
-
-    let cumulativeProbability = 0
-    let fallbackIndex = -1
-    const randomNumber = Math.random()
-    for (let index = 0; index < analyzedMoves.length; index += 1) {
-        if (probabilities[index] > 0) fallbackIndex = index
-        cumulativeProbability += probabilities[index]
-        if (randomNumber < cumulativeProbability) return analyzedMoves[index]
-    }
-
-    return fallbackIndex >= 0 ? analyzedMoves[fallbackIndex] : null
 }
 
 function changeSelection(newMove) {

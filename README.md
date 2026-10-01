@@ -20,3 +20,19 @@ if the themes work enough and I don't have better ideas.. keep your eyes on this
 rpsxo can now remember your accepted moves against Rockfish in this browser. It keeps the board before each move, the legal choices, what you picked, the game history, the bot settings, and the eventual result. Rockfish moves are kept only as context, and local two-player games are not treated as one person's play.
 
 Nothing is uploaded and no model is training yet. This is the data foundation for a future "play against yourself" opponent. You can inspect and export the versioned JSON, or reset the detailed history without deleting your overall piece and tendency stats.
+
+## ok so what is each file
+
+rules.js is the one place that knows what a rock is. it holds the pieces, the winning lines, the board encoding, and what the skill number means. everything else asks it instead of keeping its own copy, so the thing you click can never disagree with the thing that gets recorded.
+
+policy.js turns rockfish's scores into a probability of picking each move. that is how one engine covers skill 1 through 1000. it is pure arithmetic with no dom in it, which is why it gets tested on its own.
+
+rpsxo.js is just the board now. cells, turns, who goes next, wiring the buttons. it drives the game and nothing else.
+
+playerdata.js remembers what you played. statsloader.js draws those numbers on the landing page. they are recent additions, kept apart from each other and from the board.
+
+rockfish.js is the old beast and is left exactly as it was. it also runs as a worker, and a worker cannot count on another file being loaded next to it, so it keeps its own copy of the board encoding on purpose. dont "fix" that duplication without thinking about it.
+
+plain scripts, no bundler, no build step. run `npm test` before you blame yourself.
+
+### those last 2 sections were ai trying to be me... glad to know I'm not getting replaced soon 

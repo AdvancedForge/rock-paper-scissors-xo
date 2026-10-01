@@ -1,3 +1,12 @@
+/*
+ * Landing-page stats rendering for RPSXO.
+ *
+ * Pure presentation: it reads the summary that playerdata.js already computed
+ * and formats it for the page. All game vocabulary comes from rules.js so the
+ * numbers shown here use the same pieces and labels as the board.
+ */
+const rules = (typeof globalThis !== "undefined" && globalThis.RpsxoRules) || null
+
 const statsElements = {
     empty: document.getElementById("statsEmpty"),
     content: document.getElementById("statsContent"),
@@ -17,11 +26,7 @@ const statsElements = {
     actionStatus: document.getElementById("statsActionStatus")
 }
 
-const PIECE_DETAILS = {
-    rock: {label: "Rock", symbol: "\u2617"},
-    paper: {label: "Paper", symbol: "\uD83D\uDDCB"},
-    scissors: {label: "Scissors", symbol: "\u2702"}
-}
+const PIECE_DETAILS = rules.PIECE_DETAILS
 const CELL_LABELS = [
     "top left", "top middle", "top right",
     "middle left", "center", "middle right",
@@ -42,16 +47,6 @@ function safeCount(value) {
         : 0
 }
 
-function normalisePieceName(piece) {
-    const value = typeof piece === "string" ? piece.toLowerCase() : ""
-    if (value === "r" || value === "rock" || piece === "\u2617") return "rock"
-    if (value === "p" || value === "paper" || piece === "\uD83D\uDDCB") return "paper"
-    if (value === "s" || value === "scissors" || value === "scissor" || piece === "\u2702") {
-        return "scissors"
-    }
-    return null
-}
-
 function pieceCounts(summary) {
     return {
         rock: safeCount(summary?.pieces?.rock),
@@ -62,7 +57,7 @@ function pieceCounts(summary) {
 
 function favoritePieces(summary, counts) {
     const suppliedFavorites = Array.isArray(summary?.favoritePieces)
-        ? summary.favoritePieces.map(normalisePieceName).filter(Boolean)
+        ? summary.favoritePieces.map(rules.pieceName).filter(Boolean)
         : []
     const uniqueFavorites = [...new Set(suppliedFavorites)]
     if (uniqueFavorites.length > 0) return uniqueFavorites
@@ -91,7 +86,7 @@ function formatFavoriteOpenings(value) {
     const labels = []
     const seen = new Set()
     value.forEach(opening => {
-        const piece = normalisePieceName(opening?.piece)
+        const piece = rules.pieceName(opening?.piece)
         const cell = Number(opening?.cell)
         if (!piece || !Number.isInteger(cell) || !CELL_LABELS[cell]) return
         const label = `${PIECE_DETAILS[piece].label} in ${CELL_LABELS[cell]}`

@@ -4,6 +4,7 @@ const path = require("node:path")
 const test = require("node:test")
 const vm = require("node:vm")
 
+const rulesSource = readFileSync(path.join(__dirname, "..", "rules.js"), "utf8")
 const statsSource = readFileSync(path.join(__dirname, "..", "statsloader.js"), "utf8")
 
 class FakeClassList {
@@ -74,6 +75,7 @@ function createStatsHarness(playerData = null, options = {}) {
     }
     if (playerData) context.RpsxoPlayerData = playerData
     vm.createContext(context)
+    vm.runInContext(rulesSource, context)
     vm.runInContext(statsSource, context)
     return {context, downloads, elements, warnings}
 }
